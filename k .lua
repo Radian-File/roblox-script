@@ -39,7 +39,7 @@ Session.RemoveStaleGui = function()
         if obj.Name == "KzoyzName" or obj.Name == "RockyName" then
             local holder = obj.Parent
             pcall(function() obj:Destroy() end)
-            local bitmap = holder and holder:FindFirstChild("BitmapText")
+            local bitmap = holder and holder:FindFirstChild("BitmapText", true)
             if bitmap then pcall(function() bitmap.Visible = true end) end
         end
     end
@@ -8576,7 +8576,10 @@ end)
 -- warna gradient mengalir + denyut halus. Pemain lain tetap melihat nama asli.
 -- Selalu aktif sebagai penanda script (tidak ada tombol on/off).
 local TextService = game:GetService("TextService")
-local NameFx = { t0 = os.clock(), nextResolve = 0, tagHolder = nil, panelHolder = nil }
+local NameFx = {
+    t0 = os.clock(), nextResolve = 0, tagHolder = nil, panelHolder = nil,
+    warnedTag = false, warnedPanel = false,
+}
 
 local NAME_COLORS = ColorSequence.new({
     ColorSequenceKeypoint.new(0.00, Color3.fromRGB(170, 90, 255)),  -- ungu
@@ -8589,15 +8592,49 @@ local NAME_FONT = Enum.Font.FredokaOne
 
 -- Tempat nama: di atas karakter & panel kiri atas. Pencarian recursive cukup
 -- dijalankan berkala; RenderStepped hanya memakai holder yang sudah di-cache.
+local function findBitmapHolder(root)
+    if not root then return nil end
+    for _, obj in ipairs(root:GetDescendants()) do
+        if obj.Name == "BitmapText" then
+            local node = obj.Parent
+            for _ = 1, 3 do
+                if not node or node == root.Parent then break end
+                if node:IsA("GuiObject") then
+                    local lowerName = string.lower(node.Name)
+                    if node:FindFirstChild("Wrench")
+                        or string.find(lowerName, "name", 1, true)
+                        or string.find(lowerName, "tag", 1, true) then
+                        return node
+                    end
+                end
+                node = node.Parent
+            end
+        end
+    end
+    return nil
+end
+
+local function findGuiNamed(root, name)
+    if not root then return nil end
+    local found = root:FindFirstChild(name) or root:FindFirstChild(name, true)
+    return found and found:IsA("GuiObject") and found or nil
+end
+
 local function resolveNameHolders()
     local gg = PlayerGui:FindFirstChild("GameGui")
     local world = gg and gg:FindFirstChild("World")
     local cam = world and world:FindFirstChild("Camera")
+    local playerView = findGuiNamed(cam, "PlayerView")
     local chat = PlayerGui:FindFirstChild("ChatGui")
     local hud = chat and chat:FindFirstChild("HUD")
     local panel = hud and hud:FindFirstChild("PlayerPanel")
-    local tag = cam and (cam:FindFirstChild("NameTag") or cam:FindFirstChild("NameTag", true))
-    local panelName = panel and (panel:FindFirstChild("Name") or panel:FindFirstChild("Name", true))
+    -- Utamakan subtree karakter lokal. Fallback Camera dipertahankan untuk
+    -- layout lama yang menaruh NameTag sebagai sibling PlayerView.
+    local tag = findGuiNamed(playerView, "NameTag")
+    tag = tag or findBitmapHolder(playerView)
+    tag = tag or findGuiNamed(cam, "NameTag")
+    local panelName = findGuiNamed(panel, "Name")
+    panelName = panelName or findBitmapHolder(panel)
     NameFx.tagHolder, NameFx.panelHolder = tag, panelName
 end
 
@@ -8639,7 +8676,7 @@ local function makeLabel(holder, size, isTag)
     local sc = Instance.new("UIScale")
     sc.Parent = lb
     lb.Parent = holder
-    return { holder = holder, bitmap = holder:FindFirstChild("BitmapText"), label = lb, gr = gr, sc = sc,
+    return { holder = holder, bitmap = holder:FindFirstChild("BitmapText", true), label = lb, gr = gr, sc = sc,
         size = size, isTag = isTag, text = nil, w = 0 }
 end
 
@@ -8675,6 +8712,9 @@ local function nameKeep(e, holder, size, isTag)
         dropEntry(e)
         e = makeLabel(holder, size, isTag)
     end
+    if not e.bitmap or not e.bitmap.Parent then
+        e.bitmap = holder:FindFirstChild("BitmapText", true)
+    end
     if e.text ~= Misc.NameText then
         e.text = Misc.NameText
         e.label.Text = Misc.NameText
@@ -8708,6 +8748,20 @@ table.insert(Connections, RunService.RenderStepped:Connect(function()
         or (NameFx.panelHolder and not NameFx.panelHolder.Parent) then
         NameFx.nextResolve = now + 1
         resolveNameHolders()
+    end
+    if now - NameFx.t0 >= 5 then
+        if not NameFx.tagHolder and not NameFx.warnedTag then
+            NameFx.warnedTag = true
+            warn("[Rocky] Watermark karakter belum menemukan holder NameTag/BitmapText lokal")
+        elseif NameFx.tagHolder then
+            NameFx.warnedTag = false
+        end
+        if not NameFx.panelHolder and not NameFx.warnedPanel then
+            NameFx.warnedPanel = true
+            warn("[Rocky] Watermark panel belum menemukan holder nama pemain")
+        elseif NameFx.panelHolder then
+            NameFx.warnedPanel = false
+        end
     end
     NameFx.tag = nameKeep(NameFx.tag, NameFx.tagHolder, 22, true)
     NameFx.panel = nameKeep(NameFx.panel, NameFx.panelHolder, 21, false)
