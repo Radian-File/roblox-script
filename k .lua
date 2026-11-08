@@ -384,6 +384,7 @@ local Refs = {
     Why = {},         -- alasan referensi belum tersedia
     TreeTried = false,
     ViewOk = false,
+    DeepTried = {},
 }
 
 -- Daftar drop di world (diambil dari game)
@@ -1563,7 +1564,7 @@ local function setRef(name, value, source)
     Refs.Why[name] = nil
 end
 
-local function acceptRefTable(v, source)
+local function acceptRefTable(v, source, coreOnly)
     if not Refs.World and isWorldRef(v) then
         setRef("World", v, source)
     end
@@ -1574,6 +1575,7 @@ local function acceptRefTable(v, source)
     if not Refs.State and isStateHolder(v) then
         setRef("State", rawget(v, "state"), source)
     end
+    if coreOnly then return end
     if not Refs.Menu and type(rawget(v, "openBackpack")) == "function"
         and type(rawget(v, "ui")) == "table" then
         setRef("Menu", v, source)
@@ -1607,7 +1609,8 @@ local function acceptRefFunction(fn, source)
     end
 end
 
-local function findRefs(gcObjects)
+local function findRefs(gcObjects, wants)
+    wants = wants or {}
     local previous = {
         Inv = Anim.isInventoryRef(Refs.Inv) and Refs.Inv or nil,
         World = isWorldRef(Refs.World) and Refs.World or nil,
@@ -1642,15 +1645,29 @@ local function findRefs(gcObjects)
         if hasMenuApi then setRef("Menu", MenuModule, "GameGui.WorldMenu") end
     end
     Anim.Particles = nil
+    local setFallback = (NetOk and type(Net) == "table" and type(Net.tile) == "table"
+        and type(Net.tile.send) == "function") or SetTileRemote ~= nil
+    local punchFallback = setFallback and NetOk and type(Net) == "table" and type(Net.act) == "table"
+        and type(Net.act.send) == "function"
     for index, v in ipairs(objects) do
         local tv = type(v)
         if tv == "table" then
             acceptRefTable(v, "getgc")
+            if not Drops.list and v ~= Refs.World then
+                local e = rawget(v, 1)
+                if type(e) == "table" and rawget(e, "uid") ~= nil and rawget(e, "frame") ~= nil
+                    and type(rawget(e, "x")) == "number" and type(rawget(e, "y")) == "number"
+                    and rawget(e, "id") ~= nil then
+                    Drops.list = v
+                    Refs.Source.Drop, Refs.Why.Drop = "getgc", nil
+                end
+            end
         elseif tv == "function" and (not Refs.SetTile or not Refs.Punch) then
             acceptRefFunction(v, "getgc")
         end
-        if Refs.World and Refs.Inv and Refs.SetTile and Refs.State and Refs.Punch
-            and Refs.Menu and Refs.Gems and Refs.Hud and Refs.Others then break end
+        if Refs.World and Refs.Inv and Refs.State and (Refs.SetTile or setFallback)
+            and (Refs.Punch or punchFallback) and (not wants.drops or Drops.list)
+            and (not wants.others or Refs.Others) then break end
         if index % 100 == 0 then task.wait() end
     end
     if not Refs.SetTile and type(previous.SetTile) == "function" and isSetTileFn(previous.SetTile) then
@@ -1697,15 +1714,17 @@ local function refsText()
     local setStatus = Refs.SetTile and "OK" or (setFallback and "FALLBACK" or "TIDAK")
     local posStatus = stateOk and "OK" or (Refs.State and "TUNGGU" or (Refs.ViewOk and "VIEW" or "TIDAK"))
     local punchStatus = Refs.Punch and "OK" or (punchFallback and "FALLBACK" or "TIDAK")
+    local dropStatus = Drops.list and "OK" or (Refs.DeepTried.Drop and "TIDAK" or "TUNDA")
     local treeStatus = Refs.Trees and "OK" or (Refs.TreeTried and "TIDAK" or "TUNDA")
+    local othersStatus = Refs.Others and "OK" or (Refs.DeepTried.Others and "TIDAK" or "TUNDA")
     return "World: " .. worldStatus
         .. " | Inventori: " .. (Refs.Inv and "OK" or "TIDAK")
         .. " | setTile: " .. setStatus
         .. " | Posisi: " .. posStatus
         .. " | Pukul: " .. punchStatus
-        .. " | Drop: " .. (Drops.list and "OK" or "TIDAK")
+        .. " | Drop: " .. dropStatus
         .. " | Pohon: " .. treeStatus
-        .. " | Pemain: " .. (Refs.Others and "OK" or "TIDAK")
+        .. " | Pemain: " .. othersStatus
         .. " | Animasi: " .. (Anim.fn and "OK" or "TIDAK")
         .. " | Dropdown: " .. (UI.DropErr and ("ERROR " .. tostring(UI.DropErr)) or (UI.DropOk and "OK" or "-"))
 end
@@ -1726,6 +1745,10 @@ local function refsDetail()
             lines[#lines + 1] = name .. ": sumber " .. tostring(Refs.Source[name] or "terdeteksi")
         elseif name == "Trees" and not Refs.TreeTried then
             lines[#lines + 1] = "Trees: discovery ditunda sampai fitur membutuhkan"
+        elseif name == "Drop" and not Refs.DeepTried.Drop then
+            lines[#lines + 1] = "Drop: deep discovery ditunda sampai fitur membutuhkan"
+        elseif name == "Others" and not Refs.DeepTried.Others then
+            lines[#lines + 1] = "Others: deep discovery ditunda sampai Penjaga membutuhkan"
         elseif name == "SetTile" and setTileFallbackSource() then
             lines[#lines + 1] = "SetTile primary: " .. tostring(Refs.Why.SetTile)
                 .. "; fallback aktif " .. setTileFallbackSource()
@@ -1756,7 +1779,9 @@ local function logRefDiagnostics()
         elseif not value and hasFallback then
             print(("[Rocky] Referensi %s primary belum tersedia (%s); fallback aktif: %s")
                 :format(name, tostring(Refs.Why[name] or "alasan tidak diketahui"), tostring(hasFallback)))
-        elseif not value and not (name == "Trees" and not Refs.TreeTried) then
+        elseif not value and not (name == "Trees" and not Refs.TreeTried)
+            and not (name == "Drop" and not Refs.DeepTried.Drop)
+            and not (name == "Others" and not Refs.DeepTried.Others) then
             warn(("[Rocky] Referensi %s belum tersedia: %s"):format(name, tostring(Refs.Why[name] or "alasan tidak diketahui")))
         end
     end
@@ -2267,13 +2292,13 @@ function Anim.quickRefs(full, maxFunctions)
         if not seen[fn] then
             seen[fn] = true
             n += 1
-            acceptRefFunction(fn, "RunService upvalue")
+            if full then acceptRefFunction(fn, "RunService upvalue") end
             for _, u in pairs(getUpvalues(fn)) do
                 local tu = type(u)
                 if tu == "table" then
-                    acceptRefTable(u, "RunService upvalue")
+                    acceptRefTable(u, "RunService upvalue", not full)
                 elseif tu == "function" and not seen[u] then
-                    acceptRefFunction(u, "RunService upvalue")
+                    if full then acceptRefFunction(u, "RunService upvalue") end
                     queue[#queue + 1] = u
                 end
             end
@@ -2384,6 +2409,34 @@ local function findDropRefs(deep, gcObjects)
         and "dropList/dropTaken/DropTaken connection tidak ditemukan"
         or "World belum tersedia")
     return Drops.list ~= nil
+end
+
+local DeepRefs = { Busy = false, LastAt = -1e9 }
+local function deepRefreshRefs(reason, wants)
+    if DeepRefs.Busy then return false, "deep scan sedang berjalan" end
+    if os.clock() - DeepRefs.LastAt < 5 then return false, "deep scan baru saja dijalankan" end
+    DeepRefs.Busy, DeepRefs.LastAt = true, os.clock()
+    wants = wants or {}
+    if wants.drops then Refs.DeepTried.Drop = true end
+    if wants.others then Refs.DeepTried.Others = true end
+    pcall(function()
+        if UI.RefInfo then UI.RefInfo:SetDesc("Menghubungkan... deep scan " .. tostring(reason or "reference")) end
+    end)
+    local objects, scanErr = Anim.gcObjects()
+    if type(objects) ~= "table" then
+        DeepRefs.Busy = false
+        return false, scanErr or "snapshot getgc tidak tersedia"
+    end
+    local ok, err = pcall(function()
+        findRefs(objects, wants)
+        -- findRefs juga mengenali drop non-kosong dalam traversal yang sama.
+        -- Jalur ringan ini melengkapi empty drop list dari method World/remote.
+        findDropRefs(false)
+    end)
+    objects = nil
+    DeepRefs.Busy = false
+    if not ok then return false, tostring(err) end
+    return true
 end
 
 -- Cari fungsi game yang mengurangi / menghapus drop (dipakai World.dropTaken).
@@ -3129,6 +3182,16 @@ local function automationPreflight(opts)
     opts = opts or {}
     local issues = {}
     if opts.drops and not Drops.list then pcall(findDropRefs, false) end
+    local missingAction = (opts.place and not (Refs.SetTile or setTileFallbackSource()))
+        or (opts.punch and not (Refs.Punch or punchFallbackSource()))
+    local needDeep = not Refs.World or not Refs.Inv or not Refs.State or missingAction
+        or (opts.drops and not Drops.list)
+    if needDeep then
+        local ok, why = deepRefreshRefs("preflight automation", { drops = opts.drops == true })
+        if not ok and why ~= "deep scan baru saja dijalankan" then
+            Refs.Why.Deep = tostring(why)
+        end
+    end
     local worldOk, worldWhy = worldReady(Refs.World)
     if not worldOk then issues[#issues + 1] = "World belum siap: " .. tostring(worldWhy) end
     if opts.inventory and not Refs.Inv then issues[#issues + 1] = "Inventori belum terhubung" end
@@ -9954,6 +10017,10 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
         table.clear(Guard.Alerted)
         table.clear(Guard.Allow)
         if on then
+            if not Refs.Others then
+                local ok, why = deepRefreshRefs("Penjaga", { others = true })
+                if not ok then warn("[Rocky] Data pemain belum ditemukan: " .. tostring(why)) end
+            end
             -- pemain biasa yang sudah ada sekarang diabaikan (teman / akun sendiri)
             for _, p in ipairs(playersHere()) do
                 if not p.role then Guard.Allow[p.id] = true end
@@ -12338,7 +12405,7 @@ Box.ConnCalib = box(ConnTab, "Koreksi posisi", false)
 Box.ConnLang = box(ConnTab, "Bahasa / Language", false)
 
 local function refreshLightRefs(scanConnections, maxFunctions)
-    if scanConnections ~= false then pcall(Anim.quickRefs, true, maxFunctions or 80) end
+    if scanConnections ~= false then pcall(Anim.quickRefs, false, maxFunctions or 80) end
     Refs.ViewOk = getView() ~= nil
     if Refs.World and not Drops.list then pcall(findDropRefs, false) end
     if Refs.World and not Refs.Trees and Auto.findTreesStruct then
@@ -12381,6 +12448,7 @@ local function reconnect(show)
     Refs.World, Refs.State, Refs.Others = nil, nil, nil
     Refs.Trees, Refs.TreeMode, Refs.TreeP = nil, nil, nil
     Refs.ViewOk, Refs.TreeTried = false, false
+    Refs.DeepTried = {}
     Drops.list, Drops.update = nil, nil
     for _, name in ipairs({ "World", "State", "Others", "Trees", "Drop" }) do
         Refs.Source[name], Refs.Why[name] = nil, nil
@@ -12394,13 +12462,24 @@ local function reconnect(show)
         supportWorld = Refs.World
         task.wait() -- biar dropdown tampil dulu sebelum scan lengkap (scan menahan layar sebentar)
     end
-    -- 2) scan lengkap. getgc() sendiri tetap bergantung executor, tetapi snapshot
-    -- hanya diambil sekali lalu pemrosesannya dipecah agar UI sempat menggambar.
-    pcall(function() UI.RefInfo:SetDesc("Menghubungkan... memindai referensi game") end)
-    task.wait(0.25)
-    local gcObjects, gcErr = Anim.gcObjects()
-    if not gcObjects then warn("[Rocky] Scan referensi gagal: " .. tostring(gcErr)) end
-    findRefs(gcObjects or false)
+    -- 2) Gunakan jalur ringan lebih dulu. getgc hanya menjadi fallback jika
+    -- reference inti atau jalur aksi memang belum ditemukan.
+    if MenuModOk and type(MenuModule) == "table" then
+        Refs.Menu = MenuModule
+        Refs.Source.Menu = "GameGui.WorldMenu"
+    end
+    pcall(findDropRefs, false)
+    local coreReady = worldReady(Refs.World) and Refs.Inv and readStateRef(Refs.State, true) ~= nil
+    local actionReady = (Refs.SetTile or setTileFallbackSource()) and (Refs.Punch or punchFallbackSource())
+    if not coreReady or not actionReady then
+        task.wait(0.1)
+        local ok, why = deepRefreshRefs("koneksi inti", {
+            others = Config.saved("Penjaga", "On") == true,
+        })
+        if not ok then warn("[Rocky] Deep scan referensi gagal: " .. tostring(why)) end
+    else
+        print("[Rocky] Deep scan dilewati: reference inti sudah siap")
+    end
     watchInventory()
     if not inventoryRefreshed then
         pcall(doInvRefresh, true)
@@ -12409,8 +12488,7 @@ local function reconnect(show)
         -- jangan bangun ulang semua dropdown inventory untuk kedua kalinya.
         pcall(UI.PabrikSupportRefresh, true)
     end
-    findDropRefs(true, gcObjects or false)
-    gcObjects = nil -- jangan tahan seluruh snapshot GC setelah reconnect selesai
+    pcall(findDropRefs, false)
     -- Tree refs dicari saat Farmer/Build/Pabrik benar-benar mulai. Fallback ini
     -- dapat menelusuri banyak closure sehingga tidak layak berada di startup.
     table.clear(DropFailUntil)
