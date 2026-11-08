@@ -1472,7 +1472,9 @@ local function readStateRef(fn, activeOnly)
     -- Fingerprint ini dipakai versi awal dan membedakan state karakter dari
     -- table posisi lain yang kebetulan mempunyai x/y.
     if s.facing == nil or s.vx == nil then return nil, "state() tidak memiliki facing/vx" end
-    if type(s.grounded) ~= "boolean" then return nil, "state() tidak memiliki status grounded" end
+    -- `grounded` bukan bagian fingerprint awal dan nilainya dapat berubah saat
+    -- karakter bergerak. Jangan membuang sumber koordinat yang valid hanya
+    -- karena capability tersebut tidak tersedia pada saat discovery.
     if activeOnly and s.active == false then return nil, "state karakter inactive" end
     return s
 end
@@ -1682,7 +1684,7 @@ local function findRefs(gcObjects, wants)
     end
     Refs.Why.World = Refs.World and nil or "struktur fg/bg/w/h/spawn tidak ditemukan"
     Refs.Why.Inv = Refs.Inv and nil or "object slots + API count/room tidak ditemukan"
-    Refs.Why.State = Refs.State and nil or "state() aktif dengan x/y/facing/vx/grounded tidak ditemukan"
+    Refs.Why.State = Refs.State and nil or "state() aktif dengan x/y/facing/vx tidak ditemukan"
     Refs.Why.SetTile = Refs.SetTile and nil or (getconsts and "signature tile/placedAt/flips tidak ditemukan" or "getconstants tidak tersedia")
     Refs.Why.Punch = Refs.Punch and nil or (getconsts and "signature newCrack/HarvestProvider tidak ditemukan" or "getconstants tidak tersedia")
     Refs.Why.Others = Refs.Others and nil or "object list() + where()/playerAt() tidak ditemukan"
@@ -12444,15 +12446,21 @@ end
 
 local function waitConnectionSurface(maxSec)
     local deadline = os.clock() + (tonumber(maxSec) or 8)
+    local partialReadyAt = nil
     while alive() and os.clock() < deadline do
         local gameGui = PlayerGui:FindFirstChild("GameGui")
         local worldGui = gameGui and gameGui:FindFirstChild("World")
         local camera = worldGui and worldGui:FindFirstChild("Camera")
         local playerView = camera and camera:FindFirstChild("PlayerView", true)
         if LocalPlayer.Character and playerView then
-            -- Beri module/state game satu frame tambahan setelah surface muncul.
-            task.wait()
-            return true
+            if getView() or (partialReadyAt and os.clock() - partialReadyAt >= 1) then
+                -- Beri module/state game satu frame tambahan setelah surface muncul.
+                task.wait()
+                return true
+            end
+            -- Tiles dapat menyusul PlayerView. Tunggu sebentar, tetapi jangan
+            -- menahan primary state discovery selama seluruh timeout.
+            partialReadyAt = partialReadyAt or os.clock()
         end
         task.wait(0.25)
     end
