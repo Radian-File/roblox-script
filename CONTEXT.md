@@ -265,3 +265,10 @@ Rencana detail dan urutan pengerjaan berada di `docs/implementation-plans.md`. S
 - Sebelum source remote dikompilasi, loader memeriksa kegagalan HTTP, tipe respons, respons kosong, serta ciri HTML/error page. Respons `504 Gateway Time-out` berbentuk HTML dilaporkan sebagai kegagalan terkendali dan tidak dieksekusi.
 - Hasil `loadstring`, eksekusi library, dan keberadaan `CreateWindow` divalidasi. `CreateWindow` juga dibungkus `pcall`; bila gagal, sesi awal dibatalkan sebelum komponen GUI lanjutan dibuat.
 - Perubahan ini hanya diverifikasi secara statis. Keberhasilan download dan kompatibilitas runtime dengan executor masih memerlukan pengujian terotorisasi.
+
+## 16. Perbaikan batas inventory Pabrik (8 November 2026)
+
+- Runtime melaporkan `attempt to perform arithmetic (sub) on nil and number` pada kontrol Inventory Pabrik yang menghitung `CAP - 1`. Error tersebut menghentikan konstruksi UI sebelum tab Koneksi dibuat.
+- Batas aman Pabrik kini dimiliki oleh `Pabrik.InventoryCap` dengan fallback `190`; slider Pabrik dan seluruh pemeriksaan kapasitas seed Pabrik memakai nilai ini, bukan `CAP` bersama.
+- `InventoryCap` bukan pengaturan pengguna dan tidak dipersistenkan. Pemakaian `CAP` oleh Build tidak diubah dalam patch ini.
+- Patch hanya diperiksa secara statis; buka UI Pabrik lalu tab Koneksi pada runtime terotorisasi untuk verifikasi.
