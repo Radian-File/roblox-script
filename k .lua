@@ -385,6 +385,7 @@ local Refs = {
     TreeTried = false,
     ViewOk = false,
     DeepTried = {},
+    FullScan = false,
 }
 
 -- Daftar drop di world (diambil dari game)
@@ -1730,7 +1731,10 @@ local function refsText()
 end
 
 local function refsDetail()
-    local lines = { refsText() }
+    local lines = {
+        "Mode koneksi: " .. (Refs.FullScan and "FULL MANUAL" or "RINGAN OTOMATIS"),
+        refsText(),
+    }
     for _, name in ipairs({ "World", "Inv", "SetTile", "State", "Punch", "Drop", "Trees", "Others" }) do
         local value = (name == "Drop") and Drops.list or Refs[name]
         if name == "World" and value then
@@ -2412,9 +2416,9 @@ local function findDropRefs(deep, gcObjects)
 end
 
 local DeepRefs = { Busy = false, LastAt = -1e9 }
-local function deepRefreshRefs(reason, wants)
+local function deepRefreshRefs(reason, wants, force)
     if DeepRefs.Busy then return false, "deep scan sedang berjalan" end
-    if os.clock() - DeepRefs.LastAt < 5 then return false, "deep scan baru saja dijalankan" end
+    if not force and os.clock() - DeepRefs.LastAt < 5 then return false, "deep scan baru saja dijalankan" end
     DeepRefs.Busy, DeepRefs.LastAt = true, os.clock()
     wants = wants or {}
     if wants.drops then Refs.DeepTried.Drop = true end
@@ -3187,11 +3191,8 @@ local function automationPreflight(opts)
         or (opts.punch and not (Refs.Punch or punchFallbackSource()))
     local needDeep = not Refs.World or not Refs.Inv or not Refs.State or missingAction
         or (opts.drops and not Drops.list)
-    if needDeep then
-        local ok, why = deepRefreshRefs("preflight automation", { drops = opts.drops == true })
-        if not ok and why ~= "deep scan baru saja dijalankan" then
-            Refs.Why.Deep = tostring(why)
-        end
+    if needDeep and not Refs.FullScan then
+        issues[#issues + 1] = "Koneksi penuh belum dijalankan; tekan Koneksi > Hubungkan ke game"
     end
     local worldOk, worldWhy = worldReady(Refs.World)
     if not worldOk then issues[#issues + 1] = "World belum siap: " .. tostring(worldWhy) end
@@ -10022,8 +10023,7 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
         table.clear(Guard.Allow)
         if on then
             if not Refs.Others then
-                local ok, why = deepRefreshRefs("Penjaga", { others = true })
-                if not ok then warn("[Rocky] Data pemain belum ditemukan: " .. tostring(why)) end
+                notify("Penjaga", "Data pemain belum terhubung. Tekan Koneksi > Hubungkan ke game", 5)
             end
             -- pemain biasa yang sudah ada sekarang diabaikan (teman / akun sendiri)
             for _, p in ipairs(playersHere()) do
@@ -12442,7 +12442,24 @@ local function startRefRetry()
     end)
 end
 
-local function reconnect(show)
+local function waitConnectionSurface(maxSec)
+    local deadline = os.clock() + (tonumber(maxSec) or 8)
+    while alive() and os.clock() < deadline do
+        local gameGui = PlayerGui:FindFirstChild("GameGui")
+        local worldGui = gameGui and gameGui:FindFirstChild("World")
+        local camera = worldGui and worldGui:FindFirstChild("Camera")
+        local playerView = camera and camera:FindFirstChild("PlayerView", true)
+        if LocalPlayer.Character and playerView then
+            -- Beri module/state game satu frame tambahan setelah surface muncul.
+            task.wait()
+            return true
+        end
+        task.wait(0.25)
+    end
+    return false
+end
+
+local function reconnect(show, full)
     -- hentikan Clear / Farmer dulu
     if Clear.Running then stopClear("Dihentikan: hubungkan ulang ke game") end
     if Farmer.Running then stopFarmer("Dihentikan: hubungkan ulang ke game") end
@@ -12453,6 +12470,7 @@ local function reconnect(show)
     Refs.Trees, Refs.TreeMode, Refs.TreeP = nil, nil, nil
     Refs.ViewOk, Refs.TreeTried = false, false
     Refs.DeepTried = {}
+    Refs.FullScan = false
     Drops.list, Drops.update = nil, nil
     for _, name in ipairs({ "World", "State", "Others", "Trees", "Drop" }) do
         Refs.Source[name], Refs.Why[name] = nil, nil
@@ -12466,23 +12484,21 @@ local function reconnect(show)
         supportWorld = Refs.World
         task.wait() -- biar dropdown tampil dulu sebelum scan lengkap (scan menahan layar sebentar)
     end
-    -- 2) Gunakan jalur ringan lebih dulu. getgc hanya menjadi fallback jika
-    -- reference inti atau jalur aksi memang belum ditemukan.
+    -- 2) Startup/respawn berhenti di jalur ringan. getgc hanya boleh berjalan
+    -- setelah pengguna menekan tombol Hubungkan ke game (full == true).
     if MenuModOk and type(MenuModule) == "table" then
         Refs.Menu = MenuModule
         Refs.Source.Menu = "GameGui.WorldMenu"
     end
     pcall(findDropRefs, false)
-    local coreReady = worldReady(Refs.World) and Refs.Inv and readStateRef(Refs.State, true) ~= nil
-    local actionReady = (Refs.SetTile or setTileFallbackSource()) and (Refs.Punch or punchFallbackSource())
-    if not coreReady or not actionReady then
+    if full then
+        Refs.FullScan = true
         task.wait(0.1)
-        local ok, why = deepRefreshRefs("koneksi inti", {
-            others = Config.saved("Penjaga", "On") == true,
-        })
+        local ok, why = deepRefreshRefs("manual", { drops = true, others = true }, true)
         if not ok then warn("[Rocky] Deep scan referensi gagal: " .. tostring(why)) end
+        if Refs.World and not Refs.Trees then pcall(findTreeRefs) end
     else
-        print("[Rocky] Deep scan dilewati: reference inti sudah siap")
+        print("[Rocky] Koneksi ringan selesai; deep scan menunggu tombol Hubungkan ke game")
     end
     watchInventory()
     if not inventoryRefreshed then
@@ -12521,9 +12537,9 @@ end))
 safe(function()
     Box.ConnMain:Button({
         Title = "Hubungkan ke game",
-        Desc = "Pakai setelah pindah world",
+        Desc = "Full scan manual setelah karakter masuk world",
         Callback = function()
-            UI.later("reconnect", function() reconnect("Koneksi") end)
+            UI.later("reconnect", function() reconnect("Koneksi", true) end)
         end,
     })
 end)
@@ -12786,8 +12802,11 @@ do
 end
 
 task.spawn(function()
-    task.wait(0.75) -- beri WindUI waktu render stabil sebelum scan executor
-    reconnect("Rocky v5.2")
+    task.wait(0.75) -- beri WindUI waktu render stabil sebelum menunggu world
+    if not waitConnectionSurface(8) then
+        warn("[Rocky] Karakter/PlayerView belum siap; koneksi ringan tetap dicoba")
+    end
+    reconnect("Rocky v5.2", false)
     -- Penjaga dari config dinyalakan setelah data pemain ketemu
     -- (supaya pemain yang sudah ada dicatat dulu)
     if Config.saved("Penjaga", "On") == true and alive() then
