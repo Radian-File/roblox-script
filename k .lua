@@ -1465,7 +1465,6 @@ local function isStateHolder(v)
     if type(fn) ~= "function" then return false end
     local ok, s = pcall(fn)
     return ok and type(s) == "table" and type(s.x) == "number" and type(s.y) == "number"
-        and s.active ~= false
 end
 
 -- Kontrak minimum yang benar-benar dipakai seluruh consumer world. Field
@@ -1484,9 +1483,9 @@ local function isOthersRef(v)
     if type(rawget(v, "where")) ~= "function" and type(rawget(v, "playerAt")) ~= "function" then
         return false
     end
-    local ok, players = pcall(list)
-    if not ok then ok, players = pcall(list, v) end
-    if not ok or type(players) ~= "table" then return false end
+    -- Jangan panggil API pemain milik game selama discovery. Pada beberapa versi
+    -- fungsi ini memiliki efek samping atau belum siap sebelum world selesai dimuat.
+    -- Consumer `playersHere()` tetap memvalidasi hasilnya dengan pcall saat dipakai.
     return true
 end
 
@@ -1962,11 +1961,14 @@ end
 
 local function getView()
     local gg = PlayerGui:FindFirstChild("GameGui")
-    local cam = gg and gg:FindFirstChild("World") and gg.World:FindFirstChild("Camera")
-    local tiles = cam and cam:FindFirstChild("Tiles")
-    local pv = cam and cam:FindFirstChild("PlayerView")
+    local worldView = gg and gg:FindFirstChild("World")
+    local cam = worldView and worldView:FindFirstChild("Camera")
+    -- Layout GameGui dapat menambah container di antara Camera dan kedua object
+    -- ini. Tetap utamakan jalur lama, lalu cari nama yang sama secara rekursif.
+    local tiles = cam and (cam:FindFirstChild("Tiles") or cam:FindFirstChild("Tiles", true))
+    local pv = cam and (cam:FindFirstChild("PlayerView") or cam:FindFirstChild("PlayerView", true))
     if not (tiles and pv) then return nil end
-    local sample = tiles:FindFirstChildWhichIsA("ImageLabel")
+    local sample = tiles:FindFirstChildWhichIsA("ImageLabel", true)
     if not sample or sample.AbsoluteSize.X <= 0 then return nil end
     return { tiles = tiles, pv = pv, ts = sample.AbsoluteSize.X }
 end
@@ -2197,10 +2199,11 @@ function Anim.findFast()
     return false
 end
 
--- Cari data world & isi tas cepat: telusuri upvalue fungsi game yang terhubung ke RunService
--- (fungsi gambar / update game memegang tabel-tabel itu). Maks 400 fungsi, tanpa getgc.
-function Anim.quickRefs(full)
+-- Cari data world & isi tas cepat: telusuri upvalue fungsi game yang terhubung ke RunService.
+-- Budget eksplisit mencegah recovery delayed-loading berubah menjadi scan berat berulang.
+function Anim.quickRefs(full, maxFunctions)
     if not getconnections then return false end
+    local limit = math.max(25, tonumber(maxFunctions) or (full and 120 or 160))
     local queue, seen, n = {}, {}, 0
     local function ready()
         if full then
@@ -2221,7 +2224,7 @@ function Anim.quickRefs(full)
         end
     end
     local i = 1
-    while i <= #queue and n < 400 and not ready() do
+    while i <= #queue and n < limit and not ready() do
         local fn = queue[i]
         i += 1
         if not seen[fn] then
@@ -12282,8 +12285,8 @@ Box.ConnCfg = box(ConnTab, "Config", true)
 Box.ConnCalib = box(ConnTab, "Koreksi posisi", false)
 Box.ConnLang = box(ConnTab, "Bahasa / Language", false)
 
-local function refreshLightRefs(scanConnections)
-    if scanConnections ~= false then pcall(Anim.quickRefs, true) end
+local function refreshLightRefs(scanConnections, maxFunctions)
+    if scanConnections ~= false then pcall(Anim.quickRefs, true, maxFunctions or 80) end
     Refs.ViewOk = getView() ~= nil
     if Refs.World and not Drops.list then pcall(findDropRefs, false) end
     if Refs.World and not Refs.Trees and Auto.findTreesStruct then
@@ -12299,21 +12302,18 @@ local function startRefRetry()
     refRetryToken += 1
     local token = refRetryToken
     task.spawn(function()
-        for attempt = 1, 3 do
+        for attempt = 1, 2 do
             if not alive() or token ~= refRetryToken then return end
             task.wait(attempt == 1 and 0.5 or 1.5)
             local hadInv = Refs.Inv ~= nil
-            refreshLightRefs()
+            refreshLightRefs(true, 80)
             if Refs.Inv and not hadInv then
                 watchInventory()
                 pcall(doInvRefresh, true)
             end
             pcall(function() UI.RefInfo:SetDesc(refsDetail()) end)
             local coreReady = Refs.World and Refs.Inv and (Refs.State or Refs.ViewOk)
-            if coreReady and Refs.Others and (Refs.SetTile or setTileFallbackSource())
-                and (Refs.Punch or punchFallbackSource()) then
-                break
-            end
+            if coreReady then break end
         end
         if alive() and token == refRetryToken then logRefDiagnostics() end
     end)
@@ -12362,7 +12362,9 @@ local function reconnect(show)
     updateStatus()
     logRefDiagnostics()
     if show then notify(show, refsText(), 5) end
-    if not (Refs.World and Refs.Inv and (Refs.State or Refs.ViewOk) and Refs.Others) then startRefRetry() end
+    -- Retry otomatis hanya untuk reference inti. Reference opsional yang hilang
+    -- tidak boleh memicu scan berulang dan membuat client tersendat.
+    if not (Refs.World and Refs.Inv and (Refs.State or Refs.ViewOk)) then startRefRetry() end
 end
 
 table.insert(Connections, LocalPlayer.CharacterAdded:Connect(function()
