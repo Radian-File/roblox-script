@@ -1478,8 +1478,31 @@ local function isGameFn(fn)
     return true
 end
 
+-- Satu kontrak untuk quick scan dan deep scan. Versi game tertentu tidak lagi
+-- mengekspos field `capacity`, jadi identitas inventory juga dapat dibuktikan
+-- lewat API read-only count/room pada object yang memiliki slots.
+function Anim.isInventoryRef(v)
+    if type(v) ~= "table" or type(rawget(v, "slots")) ~= "table" then return false end
+    if InventoryModule ~= nil and getmetatable(v) == InventoryModule then return true end
+    local okApi, countFn, roomFn = pcall(function()
+        return v.count, v.room
+    end)
+    if not okApi or type(countFn) ~= "function" or type(roomFn) ~= "function" then return false end
+    local probeId = 0
+    for _, slot in ipairs(rawget(v, "slots")) do
+        if type(slot) == "table" and type(slot.id) == "number" then
+            probeId = slot.id
+            break
+        end
+    end
+    local okCount, count = pcall(countFn, v, probeId)
+    return okCount and type(count) == "number"
+end
+
 local function findRefs()
-    Refs.World, Refs.Inv, Refs.SetTile, Refs.State, Refs.Punch, Refs.Menu = nil, nil, nil, nil, nil, nil
+    local preservedInv = Anim.isInventoryRef(Refs.Inv) and Refs.Inv or nil
+    Refs.World, Refs.SetTile, Refs.State, Refs.Punch, Refs.Menu = nil, nil, nil, nil, nil
+    Refs.Inv = preservedInv
     Refs.Gems = nil
     Refs.Hud = nil
     Refs.Others = nil
@@ -1501,10 +1524,7 @@ local function findRefs()
                 if ok and isWorld then Refs.World = v end
             end
             if not Refs.Inv then
-                local ok, isInv = pcall(function()
-                    return getmetatable(v) == InventoryModule and type(rawget(v, "slots")) == "table"
-                        and rawget(v, "capacity") ~= nil
-                end)
+                local ok, isInv = pcall(Anim.isInventoryRef, v)
                 if ok and isInv then Refs.Inv = v end
             end
             if not Refs.State then
@@ -2029,9 +2049,7 @@ function Anim.quickRefs()
                 local tu = type(u)
                 if tu == "table" then
                     if not Refs.Inv then
-                        local ok, isInv = pcall(function()
-                            return getmetatable(u) == InventoryModule and type(rawget(u, "slots")) == "table"
-                        end)
+                        local ok, isInv = pcall(Anim.isInventoryRef, u)
                         if ok and isInv then Refs.Inv = u end
                     end
                     if not Refs.World then
@@ -12056,6 +12074,24 @@ local function reconnect(show)
     pcall(function() UI.RefInfo:SetDesc(refsText()) end)
     updateStatus()
     if show then notify(show, refsText(), 5) end
+    if not Refs.Inv then
+        task.spawn(function()
+            for attempt = 1, 3 do
+                if not alive() or Refs.Inv then break end
+                task.wait(attempt == 1 and 0.5 or 1.5)
+                pcall(Anim.quickRefs)
+            end
+            if Refs.Inv and alive() then
+                print("[Rocky] Referensi Inventory ditemukan lewat retry ringan")
+                watchInventory()
+                pcall(doInvRefresh, true)
+                pcall(function() UI.RefInfo:SetDesc(refsText()) end)
+                updateStatus()
+            elseif alive() then
+                warn("[Rocky] Referensi Inventory belum ditemukan setelah retry ringan")
+            end
+        end)
+    end
 end
 
 safe(function()
