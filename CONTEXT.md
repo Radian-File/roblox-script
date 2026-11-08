@@ -301,10 +301,19 @@ Rencana detail dan urutan pengerjaan berada di `docs/implementation-plans.md`. S
 - Re-execution membersihkan GUI grid/fly lama serta label watermark karakter lama. Watermark user-facing memakai nama `Rocky`; nama karakter asli disembunyikan hanya saat label pengganti berhasil dipasang dan dipulihkan saat cleanup.
 - Referensi Inventory hasil quick scan tidak lagi dibuang oleh `findRefs()`. Quick scan dan deep scan memakai validator yang sama; ketergantungan wajib pada field `capacity` dihapus karena field tersebut bukan kontrak yang stabil.
 - Bila Inventory belum ditemukan, reconnect menjalankan maksimal tiga quick retry ringan. Retry tidak melakukan deep scan baru dan melaporkan kegagalan melalui warning.
-- Satu reconnect mengambil maksimal satu snapshot `getgc(true)`. `findRefs()` dan `findDropRefs()` memakai snapshot yang sama, pemrosesan memberi yield setiap 300 object, lalu snapshot dilepas agar tidak menahan seluruh object GC.
+- Satu reconnect mengambil maksimal satu snapshot `getgc(true)`. `findRefs()` dan `findDropRefs()` memakai snapshot yang sama, pemrosesan memberi yield setiap 100 object, lalu snapshot dilepas agar tidak menahan seluruh object GC.
 
 ### Batas verifikasi
 
 - Patch ini telah diperiksa dengan `git diff --check` dan penelusuran call-site. Tidak ada compiler Luau lokal yang tersedia, dan tidak ada script yang dijalankan melalui executor.
 - Pengambilan snapshot `getgc(true)` sendiri tetap dapat menahan thread sesuai performa executor/perangkat; batching hanya mengurangi beban pemrosesan setelah snapshot tersedia.
 - Uji runtime terotorisasi masih diperlukan untuk memastikan: UI tampil setelah memilih bahasa, watermark lama hilang pada re-execution, nama karakter diganti Rocky, `Inventori: OK`, dropdown inventory terisi, tombol reconnect tidak membuat task yatim, dan tidak ada freeze/crash pada perangkat target.
+
+## 20. Istilah startup dan kandidat Support Block (8 November 2026)
+
+- **Koneksi otomatis bertahap** berarti startup tetap menemukan referensi game tanpa input pengguna: quick scan dijalankan lebih dulu, lalu satu snapshot `getgc(true)` tetap dijalankan otomatis untuk referensi yang lebih lengkap. Discovery tree yang jauh lebih dalam bukan bagian koneksi dasar; discovery tersebut dimulai ketika Farmer, Build, atau Pabrik membutuhkan metadata tree.
+- **Kandidat Support Block Pabrik** adalah gabungan Item ID pilihan tersimpan, block valid dalam inventory, dan block unik yang terdeteksi pada area kerja world saat ini. Kandidat bukan lagi seluruh isi `ItemDB`.
+- Pada mode **Whole World**, kandidat world berasal dari seluruh grid. Pada mode **Lahan**, kandidat world dibatasi koordinat lahan. Block world hanya menjadi kandidat bila tile di atasnya kosong atau berisi tree, sedangkan validasi final penanaman tetap dilakukan saat fase PLANT.
+- Pilihan tersimpan tetap dipertahankan walaupun block tersebut sedang tidak ditemukan di world atau inventory. Tidak ditemukannya kandidat tidak memberi izin untuk mengganti atau menghancurkan support block secara otomatis.
+- **Watermark holder** adalah container GUI untuk nama karakter/panel yang di-cache. Pencarian descendant dilakukan berkala, sedangkan animasi per-frame hanya memakai holder cache.
+- Seluruh perilaku pada bagian ini baru diverifikasi secara statis. Crash executor saat `getgc(true)` mengambil snapshot, bentuk aktual `Refs.World.fg`, refresh dropdown WindUI, dan discovery tree on-demand masih memerlukan pengujian runtime terotorisasi.
