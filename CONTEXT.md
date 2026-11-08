@@ -286,3 +286,25 @@ Rencana detail dan urutan pengerjaan berada di `docs/implementation-plans.md`. S
 - **BREAK selesai** kini berarti: inventory Item ID block target kosong, data `Drops.list` tersedia, dan tidak ada lagi drop block target pada snapshot Grid BREAK. Jika drop masih ada, Pabrik mencoba mengambil hanya drop Item ID tersebut di area grid dengan maksimal dua percobaan.
 - Jika pungutan memulihkan inventory, Pabrik melanjutkan BREAK lebih dulu (tanpa langsung dialihkan oleh ambang refill pada satu langkah tersebut). Jika target drop tetap ada atau data drop tidak tersedia, fase menjadi `PAUSED`; PLANT tidak dipakai sebagai fallback.
 - BREAK yang berhenti karena timeout tetapi masih memiliki block tidak dianggap selesai: ia tetap pada BREAK. Semua perilaku ini hanya diperiksa statis; posisi drop, pembaruan `Drops.list`, dan pickup server harus diuji pada lingkungan terotorisasi.
+
+## 19. Stabilisasi startup, branding, dan koneksi game (8 November 2026)
+
+### Istilah operasional
+
+- **UI siap** berarti seluruh kontrol WindUI telah selesai dibuat dan loop status background boleh dimulai. Ini tidak otomatis berarti referensi internal game sudah ditemukan.
+- **Koneksi Inventory** berarti `Refs.Inv` berhasil menunjuk object inventory client yang memiliki `slots` dan API baca yang sesuai. Status `Inventori: TIDAK` bukan bukti koneksi internet atau server terputus.
+- **Quick scan** mencari `Refs.Inv` dan `Refs.World` melalui upvalue koneksi event yang tersedia. **Deep scan** adalah fallback executor melalui snapshot `getgc(true)` untuk menemukan referensi game tambahan.
+
+### Perubahan statis
+
+- Pembuatan kontrol UI sekarang diberi yield antar-tab dan loop status menunggu `UI.Ready`. Tujuannya agar popup bahasa tidak diikuti pekerjaan background pada GUI yang belum selesai dibuat.
+- Re-execution membersihkan GUI grid/fly lama serta label watermark karakter lama. Watermark user-facing memakai nama `Rocky`; nama karakter asli disembunyikan hanya saat label pengganti berhasil dipasang dan dipulihkan saat cleanup.
+- Referensi Inventory hasil quick scan tidak lagi dibuang oleh `findRefs()`. Quick scan dan deep scan memakai validator yang sama; ketergantungan wajib pada field `capacity` dihapus karena field tersebut bukan kontrak yang stabil.
+- Bila Inventory belum ditemukan, reconnect menjalankan maksimal tiga quick retry ringan. Retry tidak melakukan deep scan baru dan melaporkan kegagalan melalui warning.
+- Satu reconnect mengambil maksimal satu snapshot `getgc(true)`. `findRefs()` dan `findDropRefs()` memakai snapshot yang sama, pemrosesan memberi yield setiap 300 object, lalu snapshot dilepas agar tidak menahan seluruh object GC.
+
+### Batas verifikasi
+
+- Patch ini telah diperiksa dengan `git diff --check` dan penelusuran call-site. Tidak ada compiler Luau lokal yang tersedia, dan tidak ada script yang dijalankan melalui executor.
+- Pengambilan snapshot `getgc(true)` sendiri tetap dapat menahan thread sesuai performa executor/perangkat; batching hanya mengurangi beban pemrosesan setelah snapshot tersedia.
+- Uji runtime terotorisasi masih diperlukan untuk memastikan: UI tampil setelah memilih bahasa, watermark lama hilang pada re-execution, nama karakter diganti Rocky, `Inventori: OK`, dropdown inventory terisi, tombol reconnect tidak membuat task yatim, dan tidak ada freeze/crash pada perangkat target.
