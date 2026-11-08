@@ -32,6 +32,36 @@ local UserInputService = game:GetService("UserInputService")
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
+-- Cleanup minimum tersedia sejak awal, bahkan bila eksekusi sebelumnya berhenti
+-- sebelum seluruh UI selesai dibuat. Ini mencegah watermark / panel lama menumpuk.
+Session.RemoveStaleGui = function()
+    for _, obj in ipairs(PlayerGui:GetDescendants()) do
+        if obj.Name == "KzoyzName" or obj.Name == "RockyName" then
+            local holder = obj.Parent
+            pcall(function() obj:Destroy() end)
+            local bitmap = holder and holder:FindFirstChild("BitmapText")
+            if bitmap then pcall(function() bitmap.Visible = true end) end
+        end
+    end
+    local roots = { PlayerGui }
+    local okCore, core = pcall(function() return game:GetService("CoreGui") end)
+    if okCore and core then roots[#roots + 1] = core end
+    if gethui then
+        local okHui, hui = pcall(gethui)
+        if okHui and hui and hui ~= core then roots[#roots + 1] = hui end
+    end
+    for _, root in ipairs(roots) do
+        for _, name in ipairs({ "KzoyzGrid", "KzoyzFlyPad", "RockyGrid", "RockyFlyPad" }) do
+            local obj = root:FindFirstChild(name)
+            if obj then pcall(function() obj:Destroy() end) end
+        end
+    end
+end
+pcall(Session.RemoveStaleGui)
+Session.Cleanup = function()
+    pcall(Session.RemoveStaleGui)
+end
+
 local Shared = ReplicatedStorage:WaitForChild("Shared")
 local WorldRemotes = ReplicatedStorage:WaitForChild("WorldRemotes")
 -- Remote lama (versi game sebelum ByteNet). Hanya dipakai kalau fungsi baru tidak ada.
@@ -101,6 +131,7 @@ end
 local WindUI, WindUIError = loadWindUI()
 if not WindUI then
     warn("[WindUI] GUI tidak diinisialisasi: " .. tostring(WindUIError))
+    pcall(Session.Cleanup)
     G.__KzoyzOpus = nil
     return
 end
@@ -357,7 +388,12 @@ local Drops = { list = nil, update = nil, brokeAt = {} }
 local Anim = { fn = nil, idx = nil, set = nil }
 local DropFailUntil = {}   -- drop yang ditolak, dicoba lagi nanti
 
-local UI = {}
+local UI = { Ready = false }
+
+function UI.waitReady()
+    while alive() and not UI.Ready do task.wait(0.1) end
+    return alive()
+end
 
 -- Jalankan fn dengan izin penuh. Hasil: ok, err (seperti pcall)
 function UI.ident()
@@ -8212,7 +8248,9 @@ local function nameHolders()
     local chat = PlayerGui:FindFirstChild("ChatGui")
     local hud = chat and chat:FindFirstChild("HUD")
     local panel = hud and hud:FindFirstChild("PlayerPanel")
-    return cam and cam:FindFirstChild("NameTag"), panel and panel:FindFirstChild("Name")
+    local tag = cam and (cam:FindFirstChild("NameTag") or cam:FindFirstChild("NameTag", true))
+    local panelName = panel and (panel:FindFirstChild("Name") or panel:FindFirstChild("Name", true))
+    return tag, panelName
 end
 
 local function textWidth(text, size)
@@ -8221,8 +8259,12 @@ local function textWidth(text, size)
 end
 
 local function makeLabel(holder, size, isTag)
+    for _, oldName in ipairs({ "KzoyzName", "RockyName" }) do
+        local old = holder:FindFirstChild(oldName)
+        if old then pcall(function() old:Destroy() end) end
+    end
     local lb = Instance.new("TextLabel")
-    lb.Name = "KzoyzName"
+    lb.Name = "RockyName"
     lb.BackgroundTransparency = 1
     lb.Font = NAME_FONT
     lb.TextSize = size
@@ -8360,7 +8402,7 @@ local GRID_RADIUS = 2
 local CELL = 38
 local GAP = 4
 
-local GridGui = newScreenGui("KzoyzGrid")
+local GridGui = newScreenGui("RockyGrid")
 UI.GridGui = GridGui
 
 local side = GRID_RADIUS * 2 + 1
@@ -8566,6 +8608,7 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
 end)() end
 
 task.spawn(function()
+    if not UI.waitReady() then return end
     while alive() do
         if GridGui.Enabled then
             local px, py = getPlayerTile()
@@ -8577,7 +8620,7 @@ task.spawn(function()
 end)
 
 -- Tombol ▲/▼ untuk Fly (muncul saat Fly aktif)
-local FlyPad = newScreenGui("KzoyzFlyPad")
+local FlyPad = newScreenGui("RockyFlyPad")
 UI.FlyPad = FlyPad
 
 local function flyButton(text, yOffset, onHold)
@@ -8671,11 +8714,13 @@ local windowOk, WindowOrError = pcall(function()
 end)
 if not windowOk then
     warn("[WindUI] CreateWindow gagal; GUI tidak diinisialisasi: " .. tostring(WindowOrError))
+    pcall(Session.Cleanup)
     G.__KzoyzOpus = nil
     return
 end
 if type(WindowOrError) ~= "table" or type(WindowOrError.Tab) ~= "function" then
     warn("[WindUI] CreateWindow mengembalikan object window tidak valid; GUI tidak diinisialisasi")
+    pcall(Session.Cleanup)
     G.__KzoyzOpus = nil
     return
 end
@@ -8695,6 +8740,11 @@ end)
 local function safe(fn)
     local ok, err = pcall(fn)
     if not ok then warn("[Rocky] UI error: " .. tostring(err)) end
+end
+
+function UI.stage(name)
+    print("[Rocky] Menyiapkan UI: " .. tostring(name))
+    task.wait()
 end
 
 -- Sidebar dikelompokkan: grup utama bisa dibuka / ditutup (isinya tab-tab)
@@ -8760,6 +8810,7 @@ local function addNumber(tab, o)
 end
 
 -- ===== TAB: FARM =====
+UI.stage("Farm")
 local FarmTab = makeTab("Farm", "pickaxe", "farm")
 
 safe(function()
@@ -8820,6 +8871,7 @@ safe(function()
 end)
 
 -- ===== TAB: CLEAR WORLD =====
+UI.stage("Clear World")
 local ClearTab = makeTab("Clear World", "eraser", "farm")
 
 safe(function()
@@ -8900,6 +8952,7 @@ safe(function()
 end)
 
 -- ===== TAB: FARMER =====
+UI.stage("Farmer")
 local FarmerTab = makeTab("Farmer", "leaf", "farm")
 
 safe(function()
@@ -9055,6 +9108,7 @@ addNumber(SpeedTab, {
 })
 
 -- ===== TAB: PENGATURAN (Opsi + Misc digabung) =====
+UI.stage("Pengaturan")
 local SetTab = makeTab("Pengaturan", "sliders-horizontal", "setel")
 Box.SetChar = box(SetTab, "Karakter", true)
 Box.SetOpt = box(SetTab, "Opsi", true)
@@ -9160,6 +9214,7 @@ safe(function()
 end)
 
 -- ===== TAB: AUTO CHAT =====
+UI.stage("Auto Chat")
 local ChatTab = makeTab("Auto Chat", "message-circle", "fitur")
 
 safe(function()
@@ -9650,6 +9705,7 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
     end
 
     task.spawn(function()
+        if not UI.waitReady() then return end
         while alive() do
             local here = (Guard.Mode ~= "away" and Guard.Mode ~= "out") and playersHere() or {}
             local ok, err = pcall(Guard.tick, here)
@@ -9663,6 +9719,7 @@ end)() end
 Config.add("Penjaga", Guard, { "On", "Who", "StopAll", "Leave", "AutoBack", "BackSec", "CalmSec" }, { On = true })
 
 -- ===== TAB: PENJAGA =====
+UI.stage("Penjaga")
 do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
     local GuardTab = makeTab("Penjaga", "eye", "aman")
 
@@ -9908,6 +9965,7 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
     end
 
     task.spawn(function()
+        if not UI.waitReady() then return end
         while alive() do
             local now = os.clock()
             if Bonus.Quest and now >= Bonus.NextQuest then
@@ -9927,6 +9985,7 @@ end)() end
 Config.add("Bonus", Bonus, { "Quest", "Redeem" })
 
 -- ===== TAB: BONUS =====
+UI.stage("Bonus")
 do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
     local BonusTab = makeTab("Bonus", "gift", "fitur")
     local bQuest = box(BonusTab, "Quest Harian", true)
@@ -10202,6 +10261,7 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
 
     task.spawn(function()
         local last = 0
+        if not UI.waitReady() then return end
         while alive() do
             if Scan.Auto and os.clock() - last >= Scan.Every then
                 last = os.clock()
@@ -10215,6 +10275,7 @@ end)() end
 Config.add("Growscan", Scan, { "Auto", "Layer" })
 
 -- ===== TAB: GROWSCAN =====
+UI.stage("Growscan")
 do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
     local ScanTab = makeTab("Growscan", "scan-search", "fitur")
 
@@ -10367,6 +10428,7 @@ do (function()
 
     task.spawn(function()
         local lastReport = os.clock()
+        if not UI.waitReady() then return end
         while alive() do
             local ok, txt = pcall(Stats.text)
             if ok and UI.StatsText and txt ~= Stats.Shown then
@@ -10386,6 +10448,7 @@ do (function()
 end)() end
 
 -- ===== TAB: STATISTIK =====
+UI.stage("Statistik")
 do (function()
     local StatTab = makeTab("Statistik", "bar-chart-3", "fitur")
 
@@ -10541,6 +10604,7 @@ do (function()
     end
 
     task.spawn(function()
+        if not UI.waitReady() then return end
         while alive() do
             pcall(Bag.tick)
             if UI.BagStatus then
@@ -10559,6 +10623,7 @@ end)() end
 Config.add("Tas", Bag, { "TrashOn", "TrashList", "TrashAt", "Keep", "LockOn" })
 
 -- ===== TAB: TAS =====
+UI.stage("Tas")
 do (function()
     local BagTab = makeTab("Tas", "backpack", "fitur")
 
@@ -10781,6 +10846,7 @@ do (function()
     end
 
     task.spawn(function()
+        if not UI.waitReady() then return end
         while alive() do
             if UI.SpliceStatus then
                 local txt = ("Status: %s\n%s\nSeed A: %s (x%d) | Seed B: %s (x%d)\nDitanam: %d | Splice jadi: %d"):format(
@@ -10802,6 +10868,7 @@ Config.add("Splice", Splice, { "A", "B", "Ms", "Roam" })
 Splice.Ms = math.max(Splice.Ms, 140)
 
 -- ===== TAB: SPLICE =====
+UI.stage("Splice")
 do (function()
     local SpTab = makeTab("Splice", "git-merge", "farm")
 
@@ -10905,6 +10972,7 @@ do (function()
 end)() end
 
 -- ===== TAB: LAHAN (bangun farm world) =====
+UI.stage("Lahan")
 do (function()
     local LTab = makeTab("Lahan", "layout-grid", "farm")
 
@@ -11032,6 +11100,7 @@ do (function()
     end)
 
     task.spawn(function()
+        if not UI.waitReady() then return end
         while alive() do
             local txt
             if Refs.World then
@@ -11082,6 +11151,7 @@ do (function()
 end)() end
 
 -- ===== TAB: VENDING =====
+UI.stage("Vending")
 do (function()
     local VTab = makeTab("Vending", "store", "farm")
 
@@ -11260,6 +11330,7 @@ do (function()
     end)
 
     task.spawn(function()
+        if not UI.waitReady() then return end
         while alive() do
             local txt
             if Refs.World then
@@ -11300,6 +11371,7 @@ do (function()
 end)() end
 
 -- ===== TAB: PABRIK =====
+UI.stage("Pabrik")
 do (function()
     local PTab = makeTab("Pabrik", "factory", "farm")
 
@@ -11506,6 +11578,7 @@ do (function()
     end
 
     task.spawn(function()
+        if not UI.waitReady() then return end
         while alive() do
             local seed, block = Pabrik.SeedId, Auto.blockOfSeed(Pabrik.SeedId)
             local name, door = Auto.parseDropTarget()
@@ -11610,6 +11683,7 @@ do (function()
 
     -- catat aktivitas selagi masih jalan
     task.spawn(function()
+        if not UI.waitReady() then return end
         while alive() do
             local now = os.clock()
             local wn = Guard.worldName and Guard.worldName() or ""
@@ -11757,6 +11831,7 @@ do (function()
 
     task.spawn(function()
         local outSince = nil
+        if not UI.waitReady() then return end
         while alive() do
             task.wait(2)
             local out = Guard.worldName() == ""
@@ -11865,6 +11940,7 @@ Config.add("Reconnect", Rejoin, { "On", "World", "Server", "DelaySec", "ScriptUr
 Config.add("Discord", Hook, { "On", "Url", "Penjaga", "Stop", "Full", "Bonus", "Rejoin", "Pabrik", "ReportMin" })
 
 -- ===== TAB: TITIK DROP (dipakai Pabrik, Farmer, Auto Farm) =====
+UI.stage("Titik Drop")
 do (function()
     local DTab = makeTab("Titik Drop", "map-pin", "farm")
 
@@ -11917,6 +11993,7 @@ do (function()
     end)
 
     task.spawn(function()
+        if not UI.waitReady() then return end
         while alive() do
             local name, door = Auto.parseDropTarget()
             local here = Guard.worldName()
@@ -11943,6 +12020,7 @@ do (function()
 end)() end
 
 -- ===== TAB: KONEKSI =====
+UI.stage("Koneksi")
 local ConnTab = makeTab("Koneksi", "plug", "setel")
 
 safe(function()
@@ -12151,6 +12229,7 @@ do (function()
 end)() end
 
 -- ===== TAB: DISCORD =====
+UI.stage("Discord")
 do (function()
     local DcTab = makeTab("Discord", "bell", "setel")
 
@@ -12228,6 +12307,8 @@ do (function()
     end
 end)() end
 
+UI.Ready = true
+print("[Rocky] UI selesai dibuat")
 
 ---------------------------------------------------------------------
 -- INIT
@@ -12320,4 +12401,5 @@ Session.Cleanup = function()
     pcall(function() GridGui:Destroy() end)
     pcall(function() FlyPad:Destroy() end)
     pcall(function() Window:Destroy() end)
+    pcall(Session.RemoveStaleGui)
 end
