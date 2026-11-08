@@ -261,7 +261,7 @@ Rencana detail dan urutan pengerjaan berada di `docs/implementation-plans.md`. S
 
 ## 15. WindUI loader (8 November 2026)
 
-- Loader WindUI pada `k .lua` memakai rilis resmi Footagesus yang dipin ke `1.6.66`: `https://github.com/Footagesus/WindUI/releases/download/1.6.66/main.lua`. Dokumentasi resmi WindUI mendukung pola URL rilis versi-terpilih ini.
+- Loader WindUI pada `k .lua` memakai distribusi raw resmi Footagesus yang dipin ke tag `1.6.66`: `https://raw.githubusercontent.com/Footagesus/WindUI/1.6.66/dist/main.lua`. Endpoint asset rilis resmi untuk tag yang sama pernah mengembalikan `504 Gateway Timeout`; endpoint raw tag merespons `200` saat pemeriksaan read-only. Keduanya merujuk distribusi resmi Footagesus.
 - Sebelum source remote dikompilasi, loader memeriksa kegagalan HTTP, tipe respons, respons kosong, serta ciri HTML/error page. Respons `504 Gateway Time-out` berbentuk HTML dilaporkan sebagai kegagalan terkendali dan tidak dieksekusi.
 - Hasil `loadstring`, eksekusi library, dan keberadaan `CreateWindow` divalidasi. `CreateWindow` juga dibungkus `pcall`; bila gagal, sesi awal dibatalkan sebelum komponen GUI lanjutan dibuat.
 - Perubahan ini hanya diverifikasi secara statis. Keberhasilan download dan kompatibilitas runtime dengan executor masih memerlukan pengujian terotorisasi.

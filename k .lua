@@ -50,7 +50,7 @@ local SfxOk, SfxModule = pcall(require, Shared:FindFirstChild("Sfx"))
 -- WindUI adalah dependensi remote. Jangan compile respons error HTML sebagai Luau.
 -- Versi dipin agar API GUI tidak berubah diam-diam ketika release terbaru berganti.
 local WINDUI_VERSION = "1.6.66"
-local WINDUI_URL = "https://github.com/Footagesus/WindUI/releases/download/" .. WINDUI_VERSION .. "/main.lua"
+local WINDUI_URL = "https://raw.githubusercontent.com/Footagesus/WindUI/" .. WINDUI_VERSION .. "/dist/main.lua"
 
 local function loadWindUI()
     if type(loadstring) ~= "function" then
