@@ -1645,19 +1645,54 @@ local function inventoryLabels(ids)
     return out
 end
 
--- Semua block yang secara data dapat menjadi penyangga seed. Daftar ini tidak
--- dibatasi inventori karena pemilihannya adalah konfigurasi Pabrik persisten.
+local function supportItemOk(id)
+    local it = type(id) == "number" and ItemDB[id] or nil
+    return type(it) == "table" and it.kind ~= "seed" and (it.solid or it.platform)
+end
+
+-- Kandidat penyangga dibatasi ke pilihan tersimpan, isi inventory, dan block
+-- unik yang benar-benar ada di area kerja. Jangan membangun ribuan entry WindUI
+-- dari seluruh ItemDB saat startup.
 local function supportBlockLabels()
-    local ids = {}
-    for id, it in pairs(ItemDB) do
-        if type(id) == "number" and type(it) == "table" and it.kind ~= "seed"
-            and (it.solid or it.platform) then
+    local ids, seen = {}, {}
+    local function add(id)
+        if not seen[id] and supportItemOk(id) then
+            seen[id] = true
             ids[#ids + 1] = id
+        end
+    end
+    add(Pabrik.SupportId)
+    if Refs.Inv and type(Refs.Inv.slots) == "table" then
+        for _, slot in ipairs(Refs.Inv.slots) do add(slot.id) end
+    end
+    local w = Refs.World
+    if w and type(w.fg) == "table" and type(w.w) == "number" and type(w.h) == "number" then
+        local x0, x1 = 0, w.w - 1
+        local y0, y1 = 0, w.h - 1
+        if not Pabrik.WholeWorld then
+            x0 = math.clamp(math.floor(math.min(Land.X0, Land.X1)), 0, w.w - 1)
+            x1 = math.clamp(math.floor(math.max(Land.X0, Land.X1)), 0, w.w - 1)
+            y0 = math.clamp(math.floor(Land.Y0), 0, w.h - 1)
+            y1 = math.clamp(math.floor(Land.Y0 + math.max(0, Land.Rows - 1) * Land.Gap), 0, w.h - 1)
+        end
+        for y = y0, y1 do
+            local row = w.fg[y]
+            local above = y > 0 and w.fg[y - 1] or nil
+            if row and above then
+                if Pabrik.WholeWorld or ((y - Land.Y0) % math.max(1, Land.Gap) == 0) then
+                    for x = x0, x1 do
+                        local topId = above[x]
+                        local topItem = topId and ItemDB[topId] or nil
+                        if topId == 0 or (topItem and topItem.kind == "seed") then add(row[x]) end
+                    end
+                end
+            end
         end
     end
     table.sort(ids, function(a, b)
         return string.lower(itemName(a)) < string.lower(itemName(b))
     end)
+    if #ids == 0 then return { "(belum ada block penyangga terdeteksi)" } end
     return inventoryLabels(ids)
 end
 
@@ -1667,6 +1702,7 @@ local invRefreshPending = false
 
 local lastSeedSig = nil
 local lastBlockSig = nil
+local lastSupportSig = nil
 
 -- Seed di inventori (untuk Farmer)
 local function seedIds()
@@ -1760,6 +1796,7 @@ local function doInvRefresh(force)
     -- daftar Splice & Tas (dibuat di bagian bawah script)
     if UI.SpliceRefresh then pcall(UI.SpliceRefresh, force) end
     if UI.TrashRefresh then pcall(UI.TrashRefresh, force) end
+    if UI.PabrikSupportRefresh then pcall(UI.PabrikSupportRefresh, force) end
 end
 
 local function refreshInvDropdown(force)
@@ -11433,7 +11470,12 @@ do (function()
             Desc = "Break -> tanam -> panen -> break lagi, seed lebihan di-drop",
             Value = false,
             Callback = function(on)
-                if on then Pabrik.start() elseif Pabrik.Running then Pabrik.stop() end
+                if on then
+                    if UI.PabrikSupportRefresh then UI.PabrikSupportRefresh(false) end
+                    Pabrik.start()
+                elseif Pabrik.Running then
+                    Pabrik.stop()
+                end
             end,
         })
     end)
@@ -11455,7 +11497,12 @@ do (function()
             Title = "Tanam di seluruh world",
             Desc = "Mati = hanya di lahan (tab Lahan)",
             Value = Pabrik.WholeWorld,
-            Callback = function(on) Pabrik.WholeWorld = on end,
+            Callback = function(on)
+                Pabrik.WholeWorld = on
+                UI.later("pabrikSupport", function()
+                    if UI.PabrikSupportRefresh then UI.PabrikSupportRefresh(true) end
+                end)
+            end,
         })
     end)
 
@@ -11473,6 +11520,7 @@ do (function()
 
     safe(function()
         local labels = supportBlockLabels()
+        lastSupportSig = table.concat(labels, "\0")
         UI.PabrikSupportDropdown = pCtl:Dropdown({
             Title = "Tanam hanya di atas",
             Desc = "Pilih jenis block penyangga dari database item",
@@ -11486,6 +11534,14 @@ do (function()
             end,
         })
         selectSaved(UI.PabrikSupportDropdown, labels, Pabrik.SupportId)
+        UI.PabrikSupportRefresh = function(force)
+            local nextLabels = supportBlockLabels()
+            local sig = table.concat(nextLabels, "\0")
+            if not force and sig == lastSupportSig then return end
+            lastSupportSig = sig
+            UI.ddRefresh(UI.PabrikSupportDropdown, nextLabels)
+            selectSaved(UI.PabrikSupportDropdown, nextLabels, Pabrik.SupportId)
+        end
     end)
 
     safe(function()
