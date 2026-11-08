@@ -239,8 +239,8 @@ Untuk setiap bug, dokumentasikan: **gejala → bukti fungsi/baris → hipotesis 
 | --- | --- | --- |
 | 0 | Observability transisi fase dan inventory Pabrik | Diimplementasikan secara statis; belum diuji runtime |
 | 1 | Flow deterministik `BREAK -> PLANT -> WAIT_GROWTH -> HARVEST -> REPEAT` | Diimplementasikan secara statis; belum diuji runtime |
-| 2 | Harvest seluruh tree target yang dipindai | Direncanakan |
-| 3 | Wait until trees mature | Direncanakan |
+| 2 | Harvest seluruh tree target yang dipindai | Diimplementasikan secara statis: filter seed target dan retry target unreachable; belum diuji runtime |
+| 3 | Wait until trees mature | Diimplementasikan secara statis: tree growing ditunggu, metadata hilang menjadi `PAUSED`; belum diuji runtime |
 | 4 | Set Block Storage Point | Direncanakan |
 | 5 | Auto Store Blocks | Direncanakan |
 | 6 | Auto Refill Blocks | Direncanakan |

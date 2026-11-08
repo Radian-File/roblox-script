@@ -216,6 +216,8 @@ local Pabrik = {
     LastTransition = "-",
     ResumePhase = nil,   -- dipakai interupsi sementara seperti storage/refill
     PauseReason = nil,
+    TreeSummary = nil,
+    UnreachableCount = 0,
 }
 
 local Guard = {
@@ -5506,6 +5508,38 @@ local function pabrikInventoryPolicy()
     return { storeAt = storeAt, keep = keep, refillAt = refillAt, refillTarget = refillTarget }
 end
 
+-- Ringkasan target batch Pabrik. Hanya tree dengan ItemId seed yang dipilih
+-- boleh ikut flow HARVEST; data growth yang hilang tetap dianggap unknown.
+local function pabrikTreeSummary(o)
+    local now = os.clock()
+    if o.treeSummary and now - (o.treeSummaryAt or 0) < 1 then return o.treeSummary end
+    local w = Refs.World
+    local out = { total = 0, ready = 0, growing = 0, unknown = 0, unreachable = 0, nextReady = nil }
+    if not w or not o.seed then return out end
+    local st = workspace:GetServerTimeNow()
+    for y = 0, w.h - 1 do
+        local row = w.fg[y]
+        for x = 0, w.w - 1 do
+            if (o.whole or inLandRect(x, y)) and row and row[x] == o.seed then
+                out.total += 1
+                local readyAt = treeReadyAt(x, y, o.seed)
+                if not readyAt then
+                    out.unknown += 1
+                elseif st >= readyAt then
+                    out.ready += 1
+                else
+                    out.growing += 1
+                    local left = readyAt - st
+                    if not out.nextReady or left < out.nextReady then out.nextReady = left end
+                end
+            end
+        end
+    end
+    o.treeSummary, o.treeSummaryAt = out, now
+    Pabrik.TreeSummary = out
+    return out
+end
+
 local function pabrikCfg(o, harvest, plant)
     local plantSet, area = nil, nil
     local supportEnabled = Pabrik.SupportFilter == true
@@ -5524,6 +5558,7 @@ local function pabrikCfg(o, harvest, plant)
         pms = Farmer.PlantMs,
         area = area,
         plantSet = plantSet,
+        only = harvest and o.seed or nil,
         -- Predicate tambahan ini hanya dipasang oleh Pabrik. plantSpotOk tetap
         -- menjalankan semua validasi umum setelah predicate ini lolos.
         plantOk = function(x, y)
@@ -5867,12 +5902,20 @@ local function pabrikStep(o)
     end
 
     if o.phase == "wait_growth" then
-        local ready, nextReady = readyTreeCount(o.whole, o.seed)
-        if ready > 0 then
+        local trees = pabrikTreeSummary(o)
+        if trees.ready > 0 then
+            Pabrik.UnreachableCount = 0
             pabrikSetPhase(o, "harvest", "ada pohon target matang")
             return "next"
         end
-        if nextReady then return "idle", nextReady, ready end
+        if trees.unknown > 0 then
+            return pause(trees.unknown .. " tree target tanpa metadata growth")
+        end
+        if trees.growing > 0 then
+            Pabrik.Status = ("Menunggu %d tree target tumbuh (siap berikutnya %s)")
+                :format(trees.growing, waitText(trees.nextReady))
+            return "idle", trees.nextReady, 0
+        end
         if blocks > 0 then
             pabrikSetPhase(o, "break", "tidak ada pohon target yang tumbuh")
             return "next"
@@ -5890,10 +5933,27 @@ local function pabrikStep(o)
         end
         FC = pabrikCfg(o, true, false)
         local r = fieldStep()
+        o.treeSummaryAt = nil -- world/tree dapat berubah setelah aksi atau navigasi
         if r == "idle" then
+            local trees = pabrikTreeSummary(o)
+            if trees.ready > 0 or trees.unreachable > 0 then
+                Pabrik.UnreachableCount = trees.ready + trees.unreachable
+                o.unreachableAt = o.unreachableAt or os.clock()
+                if os.clock() - o.unreachableAt > 60 then
+                    return pause(("%d tree target siap tidak terjangkau setelah retry 60 detik")
+                        :format(trees.ready + trees.unreachable))
+                end
+                Pabrik.Status = ("%d tree target siap belum terjangkau, retry terbatas")
+                    :format(trees.ready + trees.unreachable)
+                return "idle", 1, trees.ready + trees.unreachable
+            end
+            o.unreachableAt = nil
+            Pabrik.UnreachableCount = 0
             pabrikSetPhase(o, "wait_growth", "target panen siap tidak tersisa")
             return "next"
         end
+        o.unreachableAt = nil
+        Pabrik.UnreachableCount = 0
         return r
     end
 
@@ -6010,6 +6070,8 @@ function Pabrik.start()
     table.clear(Pabrik.Events)
     Pabrik.LastTransition = "-"
     Pabrik.ResumePhase, Pabrik.PauseReason = nil, nil
+    Pabrik.TreeSummary = nil
+    Pabrik.UnreachableCount = 0
     Pabrik.PlantFilterMiss = nil
     Pabrik.DropOffUntil, Pabrik.BreakFailUntil = 0, 0
     Pabrik.Running = true
@@ -11060,6 +11122,11 @@ do (function()
                 and (Pabrik.SupportId and itemName(Pabrik.SupportId) or "belum dipilih")
                 or "semua block valid"
             local policy = pabrikInventoryPolicy()
+            local trees = Pabrik.TreeSummary
+            local treeText = trees and ("siap %d | tumbuh %d | unknown %d | unreachable %d")
+                :format(trees.ready or 0, trees.growing or 0, trees.unknown or 0,
+                    math.max(trees.unreachable or 0, Pabrik.UnreachableCount or 0))
+                or "belum dipindai"
             local txt = table.concat({
                 "Status : " .. (Pabrik.Running and ("JALAN - fase " .. tostring(Pabrik.Phase or "-")) or "BERHENTI"),
                 ("Seed   : %s x%d | block %s x%d"):format(seed and itemName(seed) or "-", seed and invCount(seed) or 0,
@@ -11067,6 +11134,7 @@ do (function()
                 ("Break  : %s | tile %d"):format(Pabrik.BreakX >= 0 and ("(" .. Pabrik.BreakX .. "," .. Pabrik.BreakY .. ")")
                     or "belum diatur", countKeys(Pabrik.Tiles)),
                 "Tanam  : " .. support .. (Pabrik.PlantFilterMiss and " | tidak ada posisi cocok saat ini" or ""),
+                "Pohon  : " .. treeText,
                 ("Block  : simpan >= %d, sisakan %d, refill <= %d ke %d")
                     :format(policy.storeAt, policy.keep, policy.refillAt, policy.refillTarget),
                 ("Drop   : %s | sisakan %d, drop saat >= %d"):format(Pabrik.Drop and dropAt or "mati", Pabrik.Keep, Pabrik.DropAt),
