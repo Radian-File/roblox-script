@@ -272,3 +272,10 @@ Rencana detail dan urutan pengerjaan berada di `docs/implementation-plans.md`. S
 - Batas aman Pabrik kini dimiliki oleh `Pabrik.InventoryCap` dengan fallback `190`; slider Pabrik dan seluruh pemeriksaan kapasitas seed Pabrik menghitung nilai ini langsung, bukan lewat `CAP` atau helper lokal lintas-scope.
 - `InventoryCap` bukan pengaturan pengguna dan tidak dipersistenkan. Pemakaian `CAP` oleh Build tidak diubah dalam patch ini.
 - Patch hanya diperiksa secara statis; buka UI Pabrik lalu tab Koneksi pada runtime terotorisasi untuk verifikasi.
+
+## 17. Temuan runtime Pabrik yang tertunda (8 November 2026)
+
+- **Terkonfirmasi dari stack trace:** updater status Pabrik gagal di `k .lua:11418` saat memanggil `pabrikInventoryPolicy()`, yang pada closure UI terbaca `nil`. Dampaknya, `Status Pabrik` tetap `-` dan tidak lagi menampilkan fase maupun transisi.
+- **Dilaporkan pengguna, belum terverifikasi sebagai transisi gagal:** setelah BREAK tampak selesai, Pabrik tidak terlihat memasuki PLANT. Source menyatakan BREAK yang sukses memanggil transisi ke PLANT; karena updater status sudah mati, tampilan fase tidak dapat dipakai sebagai bukti state internal.
+- Kemungkinan yang perlu dibedakan setelah observability pulih: BREAK sebenarnya gagal/PAUSED; seed hasil BREAK tidak tersedia sehingga PLANT langsung menuju WAIT_GROWTH; atau tidak ada tile tanam valid (area, Whole World, atau Support Block Filter).
+- **Arah desain yang dicatat:** `Finalisasi BREAK` adalah kondisi antara BREAK dan PLANT. BREAK hanya boleh lanjut apabila inventory block target nol dan drop block target pada area kerja sudah diperiksa/ditangani dengan retry terbatas. Drop tersisa yang tidak dapat dijangkau harus menghasilkan PAUSED/RECOVERY, bukan langsung PLANT.
