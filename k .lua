@@ -1460,20 +1460,39 @@ function Anim.bind(fn)
     return false
 end
 
-local function isStateHolder(v)
-    local fn = rawget(v, "state")
-    if type(fn) ~= "function" then return false end
+local function readStateRef(fn, activeOnly)
+    if type(fn) ~= "function" then return nil, "state bukan function" end
     local ok, s = pcall(fn)
-    return ok and type(s) == "table" and type(s.x) == "number" and type(s.y) == "number"
+    if not ok then return nil, "state() error: " .. tostring(s) end
+    if type(s) ~= "table" or type(s.x) ~= "number" or type(s.y) ~= "number" then
+        return nil, "state() tidak memberi koordinat x/y"
+    end
+    -- Fingerprint ini dipakai versi awal dan membedakan state karakter dari
+    -- table posisi lain yang kebetulan mempunyai x/y.
+    if s.facing == nil or s.vx == nil then return nil, "state() tidak memiliki facing/vx" end
+    if activeOnly and s.active == false then return nil, "state karakter inactive" end
+    return s
 end
 
--- Kontrak minimum yang benar-benar dipakai seluruh consumer world. Field
--- `spawn` pernah ada pada versi lama, tetapi bukan syarat untuk fg/bg/w/h.
+local function isStateHolder(v)
+    local fn = type(v) == "table" and rawget(v, "state") or nil
+    return readStateRef(fn, true) ~= nil
+end
+
+-- Fingerprint world aktif yang dipakai versi awal: grid, ukuran, dan spawn.
 local function isWorldRef(v)
     if type(v) ~= "table" then return false end
     local fg, bg, w, h = rawget(v, "fg"), rawget(v, "bg"), rawget(v, "w"), rawget(v, "h")
     return type(fg) == "table" and type(bg) == "table"
         and type(w) == "number" and w > 0 and type(h) == "number" and h > 0
+        and rawget(v, "spawn") ~= nil
+end
+
+local function worldReady(v)
+    if not isWorldRef(v) then return false, "struktur fg/bg/w/h/spawn tidak valid" end
+    local name = rawget(v, "name")
+    if type(name) ~= "string" or name == "" then return false, "nama world belum aktif" end
+    return true
 end
 
 local function isOthersRef(v)
@@ -1496,8 +1515,13 @@ local function isGameFn(fn)
         local ok, res = pcall(isexecutorclosure, fn)
         if ok and res then return false end
     end
-    -- Closure game sekarang juga berasal dari Shared/ReplicatedStorage. Membatasi
-    -- debug source ke "GameGui" membuang setTile dan punch yang valid.
+    local info = debug and debug.info
+    if type(info) == "function" then
+        local ok, src = pcall(info, fn, "s")
+        if ok and type(src) == "string" and src ~= "" and not string.find(src, "GameGui", 1, true) then
+            return false
+        end
+    end
     return true
 end
 
@@ -1585,8 +1609,10 @@ end
 local function findRefs(gcObjects)
     local previous = {
         Inv = Anim.isInventoryRef(Refs.Inv) and Refs.Inv or nil,
-        World = Refs.Source.World == "RunService upvalue" and isWorldRef(Refs.World) and Refs.World or nil,
-        State = Refs.State, SetTile = Refs.SetTile, Punch = Refs.Punch, Others = Refs.Others,
+        World = isWorldRef(Refs.World) and Refs.World or nil,
+        State = readStateRef(Refs.State, true) and Refs.State or nil,
+        SetTile = Refs.SetTile, Punch = Refs.Punch, Others = Refs.Others,
+        Source = Refs.Source,
     }
     local objects, scanErr = gcObjects, nil
     if objects == nil then objects, scanErr = Anim.gcObjects() end
@@ -1595,7 +1621,7 @@ local function findRefs(gcObjects)
         Refs.Why.Inv = Refs.Inv and nil or "quick scan belum menemukan inventory"
         return Refs.World ~= nil, scanErr or "Snapshot getgc tidak tersedia"
     end
-    Refs.World, Refs.SetTile, Refs.State, Refs.Punch, Refs.Menu = nil, nil, nil, nil, nil
+    Refs.World, Refs.SetTile, Refs.State, Refs.Punch, Refs.Menu = previous.World, nil, previous.State, nil, nil
     Refs.Inv = previous.Inv
     Refs.Gems = nil
     Refs.Hud = nil
@@ -1606,6 +1632,8 @@ local function findRefs(gcObjects)
     Refs.Particles = {}
     Refs.Source, Refs.Why = {}, {}
     if Refs.Inv then Refs.Source.Inv = "preserved" end
+    if Refs.World then Refs.Source.World = previous.Source.World or "quick scan preserved" end
+    if Refs.State then Refs.Source.State = previous.Source.State or "quick scan preserved" end
     if MenuModOk and type(MenuModule) == "table" then
         local hasMenuApi = type(rawget(MenuModule, "openPicker")) == "function"
             or type(rawget(MenuModule, "enter")) == "function"
@@ -1624,15 +1652,6 @@ local function findRefs(gcObjects)
             and Refs.Menu and Refs.Gems and Refs.Hud and Refs.Others then break end
         if index % 100 == 0 then task.wait() end
     end
-    if not Refs.State and type(previous.State) == "function" then
-        local ok, state = pcall(previous.State)
-        if ok and type(state) == "table" and type(state.x) == "number" and type(state.y) == "number" then
-            setRef("State", previous.State, "preserved")
-        end
-    end
-    if not Refs.World and previous.World then
-        setRef("World", previous.World, "RunService upvalue preserved")
-    end
     if not Refs.SetTile and type(previous.SetTile) == "function" and isSetTileFn(previous.SetTile) then
         setRef("SetTile", previous.SetTile, "preserved")
     end
@@ -1642,9 +1661,9 @@ local function findRefs(gcObjects)
     if not Refs.Others and isOthersRef(previous.Others) then
         setRef("Others", previous.Others, "preserved")
     end
-    Refs.Why.World = Refs.World and nil or "struktur fg/bg/w/h tidak ditemukan"
+    Refs.Why.World = Refs.World and nil or "struktur fg/bg/w/h/spawn tidak ditemukan"
     Refs.Why.Inv = Refs.Inv and nil or "object slots + API count/room tidak ditemukan"
-    Refs.Why.State = Refs.State and nil or "state() aktif dengan koordinat x/y tidak ditemukan"
+    Refs.Why.State = Refs.State and nil or "state() aktif dengan x/y/facing/vx tidak ditemukan"
     Refs.Why.SetTile = Refs.SetTile and nil or (getconsts and "signature tile/placedAt/flips tidak ditemukan" or "getconstants tidak tersedia")
     Refs.Why.Punch = Refs.Punch and nil or (getconsts and "signature newCrack/HarvestProvider tidak ditemukan" or "getconstants tidak tersedia")
     Refs.Why.Others = Refs.Others and nil or "object list() + where()/playerAt() tidak ditemukan"
@@ -1671,11 +1690,14 @@ end
 
 local function refsText()
     local setFallback, punchFallback = setTileFallbackSource(), punchFallbackSource()
+    local worldOk = worldReady(Refs.World)
+    local stateOk = readStateRef(Refs.State, true) ~= nil
+    local worldStatus = worldOk and "OK" or (Refs.World and "TUNGGU" or "TIDAK")
     local setStatus = Refs.SetTile and "OK" or (setFallback and "FALLBACK" or "TIDAK")
-    local posStatus = Refs.State and "OK" or (Refs.ViewOk and "VIEW" or "TIDAK")
+    local posStatus = stateOk and "OK" or (Refs.State and "TUNGGU" or (Refs.ViewOk and "VIEW" or "TIDAK"))
     local punchStatus = Refs.Punch and "OK" or (punchFallback and "FALLBACK" or "TIDAK")
     local treeStatus = Refs.Trees and "OK" or (Refs.TreeTried and "TIDAK" or "TUNDA")
-    return "World: " .. (Refs.World and "OK" or "TIDAK")
+    return "World: " .. worldStatus
         .. " | Inventori: " .. (Refs.Inv and "OK" or "TIDAK")
         .. " | setTile: " .. setStatus
         .. " | Posisi: " .. posStatus
@@ -12324,6 +12346,15 @@ local function reconnect(show)
     if Clear.Running then stopClear("Dihentikan: hubungkan ulang ke game") end
     if Farmer.Running then stopFarmer("Dihentikan: hubungkan ulang ke game") end
     Auto.resetReach()
+    -- World/State/Others terikat pada sesi world aktif. Jangan biarkan reference
+    -- lama membuat quick scan berhenti sebelum membaca sesi yang sekarang.
+    Refs.World, Refs.State, Refs.Others = nil, nil, nil
+    Refs.Trees, Refs.TreeMode, Refs.TreeP = nil, nil, nil
+    Refs.ViewOk, Refs.TreeTried = false, false
+    Drops.list, Drops.update = nil, nil
+    for _, name in ipairs({ "World", "State", "Others", "Trees", "Drop" }) do
+        Refs.Source[name], Refs.Why[name] = nil, nil
+    end
     local inventoryRefreshed = false
     local supportWorld = nil
     -- 1) cari isi tas cepat lalu langsung isi dropdown (tidak menunggu scan getgc yang lama)
