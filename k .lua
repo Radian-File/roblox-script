@@ -6,8 +6,7 @@ for _, key in ipairs({ "__KzoyzOpus", "__GTFarm" }) do -- __GTFarm = nama versi 
 end
 local Session = {}
 G.__KzoyzOpus = Session
-local BUILD_ID = "2026-11-08-state-metatable-1"
-print("[Rocky] Build " .. BUILD_ID)
+print("[Rocky] Build 2026-11-08-state-metatable-2")
 local function alive()
     return G.__KzoyzOpus == Session
 end
@@ -1465,7 +1464,7 @@ function Anim.bind(fn)
     return false
 end
 
-local function validateStateValue(s, activeOnly)
+function Anim.validateStateValue(s, activeOnly)
     if type(s) ~= "table" or type(s.x) ~= "number" or type(s.y) ~= "number" then
         return nil, "state() tidak memberi koordinat x/y"
     end
@@ -1480,10 +1479,10 @@ local function readStateRef(fn, activeOnly)
     if type(fn) ~= "function" then return nil, "state bukan function" end
     local ok, s = pcall(fn)
     if not ok then return nil, "state() error: " .. tostring(s) end
-    return validateStateValue(s, activeOnly)
+    return Anim.validateStateValue(s, activeOnly)
 end
 
-local function stateCapabilities(s)
+function Anim.stateCapabilities(s)
     if type(s) ~= "table" then return "-" end
     local out = {}
     for _, name in ipairs({ "x", "y", "facing", "vx", "vy", "grounded", "active" }) do
@@ -1492,7 +1491,7 @@ local function stateCapabilities(s)
     return table.concat(out, ", ")
 end
 
-local function findStateMethod(v)
+function Anim.findStateMethod(v)
     if type(v) ~= "table" then return nil end
     local direct = rawget(v, "state")
     if type(direct) == "function" then return direct, "direct" end
@@ -1509,10 +1508,10 @@ local function findStateMethod(v)
     return nil
 end
 
-local function bindStateMethod(fn, owner)
+function Anim.bindStateMethod(fn, owner)
     local ok, value = pcall(fn)
     if ok then
-        local state, why = validateStateValue(value, true)
+        local state, why = Anim.validateStateValue(value, true)
         if state then return fn, nil end
         value = why
     else
@@ -1520,7 +1519,7 @@ local function bindStateMethod(fn, owner)
     end
     local okSelf, withSelf = pcall(fn, owner)
     if okSelf then
-        local state, why = validateStateValue(withSelf, true)
+        local state, why = Anim.validateStateValue(withSelf, true)
         if state then
             return function() return fn(owner) end, nil
         end
@@ -1529,8 +1528,8 @@ local function bindStateMethod(fn, owner)
     return nil, tostring(value) .. "; dengan self: " .. tostring(withSelf)
 end
 
-local function stateFunctionFrom(v)
-    local fn, kind = findStateMethod(v)
+function Anim.stateFunctionFrom(v)
+    local fn, kind = Anim.findStateMethod(v)
     if type(fn) ~= "function" then return nil end
     local probe = Refs.StateProbe
     probe.holders = (probe.holders or 0) + 1
@@ -1539,7 +1538,7 @@ local function stateFunctionFrom(v)
     else
         probe.metatable = (probe.metatable or 0) + 1
     end
-    local bound, why = bindStateMethod(fn, v)
+    local bound, why = Anim.bindStateMethod(fn, v)
     if not bound then
         probe.lastWhy = why
         return nil
@@ -1639,7 +1638,7 @@ local function acceptRefTable(v, source, coreOnly)
         if ok and valid then setRef("Inv", v, source) end
     end
     if not Refs.State then
-        local stateFn, stateKind = stateFunctionFrom(v)
+        local stateFn, stateKind = Anim.stateFunctionFrom(v)
         if stateFn then setRef("State", stateFn, source .. " " .. tostring(stateKind)) end
     end
     if coreOnly then return end
@@ -1818,7 +1817,7 @@ local function refsDetail()
         elseif name == "State" and value then
             local state, why = readStateRef(value, true)
             lines[#lines + 1] = not why and ("State: sumber " .. tostring(Refs.Source.State or "terdeteksi")
-                .. "; capability " .. stateCapabilities(state))
+                .. "; capability " .. Anim.stateCapabilities(state))
                 or ("State: TUNGGU - " .. tostring(why))
         elseif value then
             lines[#lines + 1] = name .. ": sumber " .. tostring(Refs.Source[name] or "terdeteksi")
@@ -1858,7 +1857,7 @@ local function logRefDiagnostics()
                 warn("[Rocky] State ditemukan tetapi belum siap: " .. tostring(why))
             else
                 print("[Rocky] State aktif dari " .. tostring(Refs.Source.State or "terdeteksi")
-                    .. "; capability " .. stateCapabilities(state))
+                    .. "; capability " .. Anim.stateCapabilities(state))
             end
         elseif not value and hasFallback then
             print(("[Rocky] Referensi %s primary belum tersedia (%s); fallback aktif: %s")
@@ -8670,7 +8669,7 @@ local NAME_FONT = Enum.Font.FredokaOne
 
 -- Tempat nama: di atas karakter & panel kiri atas. Pencarian recursive cukup
 -- dijalankan berkala; RenderStepped hanya memakai holder yang sudah di-cache.
-local function findBitmapHolder(root)
+function NameFx.findBitmapHolder(root)
     if not root then return nil end
     for _, obj in ipairs(root:GetDescendants()) do
         if obj.Name == "BitmapText" then
@@ -8692,7 +8691,7 @@ local function findBitmapHolder(root)
     return nil
 end
 
-local function findGuiNamed(root, name)
+function NameFx.findGuiNamed(root, name)
     if not root then return nil end
     local found = root:FindFirstChild(name) or root:FindFirstChild(name, true)
     return found and found:IsA("GuiObject") and found or nil
@@ -8702,17 +8701,17 @@ local function resolveNameHolders()
     local gg = PlayerGui:FindFirstChild("GameGui")
     local world = gg and gg:FindFirstChild("World")
     local cam = world and world:FindFirstChild("Camera")
-    local playerView = findGuiNamed(cam, "PlayerView")
+    local playerView = NameFx.findGuiNamed(cam, "PlayerView")
     local chat = PlayerGui:FindFirstChild("ChatGui")
     local hud = chat and chat:FindFirstChild("HUD")
     local panel = hud and hud:FindFirstChild("PlayerPanel")
     -- Utamakan subtree karakter lokal. Fallback Camera dipertahankan untuk
     -- layout lama yang menaruh NameTag sebagai sibling PlayerView.
-    local tag = findGuiNamed(playerView, "NameTag")
-    tag = tag or findBitmapHolder(playerView)
-    tag = tag or findGuiNamed(cam, "NameTag")
-    local panelName = findGuiNamed(panel, "Name")
-    panelName = panelName or findBitmapHolder(panel)
+    local tag = NameFx.findGuiNamed(playerView, "NameTag")
+    tag = tag or NameFx.findBitmapHolder(playerView)
+    tag = tag or NameFx.findGuiNamed(cam, "NameTag")
+    local panelName = NameFx.findGuiNamed(panel, "Name")
+    panelName = panelName or NameFx.findBitmapHolder(panel)
     NameFx.tagHolder, NameFx.panelHolder = tag, panelName
 end
 
