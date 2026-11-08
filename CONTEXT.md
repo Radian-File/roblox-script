@@ -317,3 +317,15 @@ Rencana detail dan urutan pengerjaan berada di `docs/implementation-plans.md`. S
 - Pilihan tersimpan tetap dipertahankan walaupun block tersebut sedang tidak ditemukan di world atau inventory. Tidak ditemukannya kandidat tidak memberi izin untuk mengganti atau menghancurkan support block secara otomatis.
 - **Watermark holder** adalah container GUI untuk nama karakter/panel yang di-cache. Pencarian descendant dilakukan berkala, sedangkan animasi per-frame hanya memakai holder cache.
 - Seluruh perilaku pada bagian ini baru diverifikasi secara statis. Crash executor saat `getgc(true)` mengambil snapshot, bentuk aktual `Refs.World.fg`, refresh dropdown WindUI, dan discovery tree on-demand masih memerlukan pengujian runtime terotorisasi.
+
+## 21. Status reference game (8 November 2026)
+
+- **Primary reference** adalah closure atau table internal game yang ditemukan dari module resmi yang sudah dimuat client, upvalue connection, atau snapshot GC dan lolos kontrak sesuai consumer script.
+- **`OK`** berarti primary reference tersedia. Panel detail mencantumkan sumber seperti `getgc`, `RunService upvalue`, `World.dropList`, atau `GameGui.WorldMenu`.
+- **`FALLBACK`** berarti primary `SetTile` atau `Punch` belum ditemukan, tetapi jalur game yang sudah dikenal source (`Shared.Net.tile`, `Shared.Net.act`, atau legacy `WorldRemotes.SetTile`) tersedia dan tervalidasi bentuk fungsinya. Status ini tidak disamakan dengan primary `OK`.
+- **`VIEW`** berarti primary `state()` belum ditemukan tetapi koordinat visual `PlayerView` dapat dibaca. Fallback ini cukup untuk sebagian fitur berbasis tile, tetapi tidak menyediakan seluruh state gerak.
+- **`TUNDA`** pada Trees berarti discovery tree yang mahal belum diminta. `TIDAK` baru dipakai setelah discovery dibutuhkan dan benar-benar gagal.
+- **Stale reference** adalah reference yang pernah valid tetapi tidak lagi cocok setelah respawn atau perpindahan world. Reconnect mereset data world/tree/drop, mempertahankan reference global yang masih lolos validasi, dan menjalankan maksimal tiga retry ringan untuk delayed loading. Respawn mereset state karakter lalu memulai retry ringan yang sama.
+- Validator World memakai kontrak yang benar-benar diperlukan consumer: `fg`, `bg`, `w`, dan `h`; field legacy `spawn` bukan lagi syarat. Validator posisi memakai `state()` aktif dengan `x/y`. Closure game tidak lagi diwajibkan berasal dari debug source `GameGui`, karena closure valid juga dapat berasal dari `Shared`/`ReplicatedStorage`.
+- Deep drop discovery mengenali field yang dipakai collector (`uid`, `frame`, `x`, `y`, dan `id`) dan tidak lagi mewajibkan metadata legacy `born`.
+- Perubahan ini diverifikasi secara statis dan melalui penelusuran dependency/call-site. Nilai status aktual, signature closure versi game sekarang, respons remote, serta ketahanan setelah respawn/world transition masih wajib diuji pada runtime terotorisasi.
