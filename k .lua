@@ -8262,7 +8262,7 @@ end)
 -- warna gradient mengalir + denyut halus. Pemain lain tetap melihat nama asli.
 -- Selalu aktif sebagai penanda script (tidak ada tombol on/off).
 local TextService = game:GetService("TextService")
-local NameFx = { t0 = os.clock() }
+local NameFx = { t0 = os.clock(), nextResolve = 0, tagHolder = nil, panelHolder = nil }
 
 local NAME_COLORS = ColorSequence.new({
     ColorSequenceKeypoint.new(0.00, Color3.fromRGB(170, 90, 255)),  -- ungu
@@ -8273,8 +8273,9 @@ local NAME_COLORS = ColorSequence.new({
 })
 local NAME_FONT = Enum.Font.FredokaOne
 
--- Tempat nama: di atas karakter & panel kiri atas
-local function nameHolders()
+-- Tempat nama: di atas karakter & panel kiri atas. Pencarian recursive cukup
+-- dijalankan berkala; RenderStepped hanya memakai holder yang sudah di-cache.
+local function resolveNameHolders()
     local gg = PlayerGui:FindFirstChild("GameGui")
     local world = gg and gg:FindFirstChild("World")
     local cam = world and world:FindFirstChild("Camera")
@@ -8283,7 +8284,7 @@ local function nameHolders()
     local panel = hud and hud:FindFirstChild("PlayerPanel")
     local tag = cam and (cam:FindFirstChild("NameTag") or cam:FindFirstChild("NameTag", true))
     local panelName = panel and (panel:FindFirstChild("Name") or panel:FindFirstChild("Name", true))
-    return tag, panelName
+    NameFx.tagHolder, NameFx.panelHolder = tag, panelName
 end
 
 local function textWidth(text, size)
@@ -8347,6 +8348,7 @@ local function nameRestore()
     dropEntry(NameFx.tag)
     dropEntry(NameFx.panel)
     NameFx.tag, NameFx.panel = nil, nil
+    NameFx.tagHolder, NameFx.panelHolder = nil, nil
 end
 
 -- Pastikan label ada, nama asli tersembunyi, ukuran tag pas dengan teks
@@ -8386,10 +8388,16 @@ end
 -- Animasi tiap frame: gradient mengalir + denyut halus
 table.insert(Connections, RunService.RenderStepped:Connect(function()
     if not alive() or not Misc.CustomName then return end
-    local tag, panelName = nameHolders()
-    NameFx.tag = nameKeep(NameFx.tag, tag, 22, true)
-    NameFx.panel = nameKeep(NameFx.panel, panelName, 21, false)
-    local t = os.clock() - NameFx.t0
+    local now = os.clock()
+    if now >= NameFx.nextResolve
+        or (NameFx.tagHolder and not NameFx.tagHolder.Parent)
+        or (NameFx.panelHolder and not NameFx.panelHolder.Parent) then
+        NameFx.nextResolve = now + 1
+        resolveNameHolders()
+    end
+    NameFx.tag = nameKeep(NameFx.tag, NameFx.tagHolder, 22, true)
+    NameFx.panel = nameKeep(NameFx.panel, NameFx.panelHolder, 21, false)
+    local t = now - NameFx.t0
     local offset = Vector2.new(((t * 0.45) % 2) - 1, 0)
     local pulse = 1 + 0.045 * math.sin(t * 3.2)
     local tg, pn = NameFx.tag, NameFx.panel
