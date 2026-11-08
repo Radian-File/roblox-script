@@ -2878,7 +2878,8 @@ end
 
 local function validate()
     local doPlace = farmMode() ~= "Break saja"
-    if not Refs.World then return "Data world belum ketemu. Tekan 'Hubungkan ke game'" end
+    local worldOk, worldWhy = worldReady(Refs.World)
+    if not worldOk then return "World belum siap: " .. tostring(worldWhy) end
     if next(farmOffsets()) == nil then return "Pilih tile dulu di Grid Tile" end
     if not getPlayerTile() then
         local _, why = readStateRef(Refs.State, true)
@@ -6545,7 +6546,10 @@ local function pabrikStep(o)
     end
 
     if o.phase == "validate" then
-        if not Refs.World or not playerState() then return pause("data world atau karakter tidak tersedia") end
+        local worldOk, worldWhy = worldReady(Refs.World)
+        if not worldOk then return pause("world tidak siap: " .. tostring(worldWhy)) end
+        local _, stateWhy = readStateRef(Refs.State, true)
+        if stateWhy then return pause("posisi karakter tidak siap: " .. stateWhy) end
         if not o.seed or not o.block then return pause("seed atau block Pabrik tidak valid") end
         if not o.whole and #landRows() == 0 then return pause("lahan belum diatur") end
         Pabrik.PauseReason = nil
