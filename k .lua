@@ -210,6 +210,8 @@ local Pabrik = {
     Row = {},            -- baris tanam yang sedang dikerjakan
     Events = {},         -- observability Pabrik; ring buffer, tidak dipersistenkan
     LastTransition = "-",
+    ResumePhase = nil,   -- dipakai interupsi sementara seperti storage/refill
+    PauseReason = nil,
 }
 
 local Guard = {
@@ -5525,19 +5527,19 @@ end
 
 -- Break block di posisi pabrik (pakai Auto Farm dengan tile & block pabrik)
 local function pabrikBreak(o)
-    if os.clock() < (Pabrik.BreakFailUntil or 0) then return false end
+    if os.clock() < (Pabrik.BreakFailUntil or 0) then return false, "cooldown break masih aktif" end
     local s = playerState()
-    if not s then return false end
+    if not s then return false, "state karakter tidak tersedia" end
     local hx, hy = startNode(s)
     if hx ~= Pabrik.BreakX or hy ~= Pabrik.BreakY then
         Pabrik.Status = ("Jalan ke posisi break (%d,%d)"):format(Pabrik.BreakX, Pabrik.BreakY)
         if not walkTo(Pabrik.BreakX, Pabrik.BreakY, 45) then
             Pabrik.Status = "Gagal jalan ke posisi break, dicoba lagi nanti"
             Pabrik.BreakFailUntil = os.clock() + 30
-            return false
+            return false, "navigasi ke posisi break gagal"
         end
     end
-    if not o.live() then return false end
+    if not o.live() then return false, "sesi Pabrik tidak lagi aktif" end
     State.Override = { offsets = Pabrik.Tiles, block = o.block, mode = "Place + Break" }
     State.Quiet = true
     table.clear(HitCount)
@@ -5547,16 +5549,18 @@ local function pabrikBreak(o)
     local id = State.RunId
     local acts0 = State.Placed + State.Broken
     local lastActs, lastActAt = acts0, os.clock()
+    local startedAt = os.clock()
     task.spawn(function() -- pengawas sesi break
         while State.Running and State.RunId == id do
             task.wait(1)
             local sd = invCount(o.seed)
             local acts = State.Placed + State.Broken
             if acts ~= lastActs then lastActs, lastActAt = acts, os.clock() end
-            -- break terus sampai block habis (tanpa batas waktu sesi)
+            -- Satu batch BREAK dibatasi BreakSec; flow berikutnya yang menentukan
+            -- apakah harus memulai batch baru.
             if not o.live() or sd >= CAP
                 or (o.drop and Pabrik.Drop and sd >= Pabrik.DropAt)
-                or (o.breakMode ~= "always" and sd >= BOOT_SEEDS)
+                or (Pabrik.BreakSec > 0 and os.clock() - startedAt >= Pabrik.BreakSec)
                 or os.clock() - lastActAt > 8 then -- 8 detik tidak ada place / pukul: jangan diam di sini
                 State.Running = false
             end
@@ -5571,8 +5575,9 @@ local function pabrikBreak(o)
     if State.Placed + State.Broken == acts0 and invCount(o.block) > 0 then
         Pabrik.BreakFailUntil = os.clock() + 60
         Pabrik.Status = "Sesi break tanpa aksi: cek posisi & tile break (dicoba lagi 1 menit)"
+        return false, "sesi break tanpa aksi"
     end
-    return true
+    return true, "batch break selesai"
 end
 
 -- "WORLD" / "WORLD:ID" / ":ID" -> nama world, id pintu
@@ -5754,7 +5759,12 @@ task.spawn(function()
     end
 end)
 
-local PHASE_NAME = { panen = "PANEN", tanam = "TANAM", ["break"] = "BREAK", tunggu = "TUNGGU" }
+local PHASE_NAME = {
+    validate = "VALIDATE", ["break"] = "BREAK", plant = "PLANT",
+    wait_growth = "WAIT_GROWTH", harvest = "HARVEST", paused = "PAUSED",
+    store_block = "STORE_BLOCK", refill_block = "REFILL_BLOCK",
+    panen = "PANEN", tanam = "TANAM", tunggu = "TUNGGU", -- dipakai Build
+}
 
 local function pabrikEvent(o, kind, reason)
     local e = {
@@ -5772,7 +5782,7 @@ local function pabrikEvent(o, kind, reason)
 end
 
 local function pabrikSetPhase(o, nextPhase, reason)
-    local from = o.phase or "panen"
+    local from = o.phase or "validate"
     o.phase = nextPhase
     Pabrik.Phase = PHASE_NAME[nextPhase] or string.upper(tostring(nextPhase))
     Pabrik.LastTransition = (PHASE_NAME[from] or tostring(from)) .. " -> "
@@ -5788,32 +5798,47 @@ end
 -- Hasil: "drop" | "work" | "move" | "wait" | "break" | "next" | "idle" (+ detik ke pohon siap)
 local function pabrikStep(o)
     local seeds, blocks = invCount(o.seed), invCount(o.block)
-    if not o.phase then pabrikSetPhase(o, "panen", "fase awal lama") end
-    -- drop seed lebihan (kapan saja)
-    if o.drop and Pabrik.Drop and seeds >= Pabrik.DropAt and seeds > Pabrik.Keep
+    if not o.phase then pabrikSetPhase(o, "validate", "mulai sesi") end
+
+    local function pause(reason)
+        Pabrik.PauseReason = reason
+        Pabrik.Status = "PAUSED: " .. reason
+        pabrikSetPhase(o, "paused", reason)
+        return "paused"
+    end
+
+    -- Drop seed adalah interupsi sementara dan tidak mengubah o.phase.
+    if o.phase ~= "paused" and o.drop and Pabrik.Drop and seeds >= Pabrik.DropAt and seeds > Pabrik.Keep
         and os.clock() >= (Pabrik.DropOffUntil or 0) then
         pabrikEvent(o, "drop", "seed mencapai ambang drop")
         pabrikDrop(o.seed, seeds - Pabrik.Keep, o.live)
         return "drop"
     end
 
-    if o.phase == "panen" then
-        -- 1x panen bisa kena beberapa pohon, jadi sisakan ruang ~20 item
-        if blocks >= CAP - 20 or seeds >= CAP - 20 then
-            pabrikSetPhase(o, "tanam", "inventory mendekati batas aman")
-            return "next"
-        end
-        FC = pabrikCfg(o, true, false)
-        local r = fieldStep()
-        if r == "idle" then
-            o.idleAt = os.clock()
-            pabrikSetPhase(o, "tanam", "tidak ada target panen siap")
-            return "next"
-        end
-        return r
+    if o.phase == "validate" then
+        if not Refs.World or not playerState() then return pause("data world atau karakter tidak tersedia") end
+        if not o.seed or not o.block then return pause("seed atau block Pabrik tidak valid") end
+        if not o.whole and #landRows() == 0 then return pause("lahan belum diatur") end
+        Pabrik.PauseReason = nil
+        pabrikSetPhase(o, "break", "validasi sesi selesai")
+        return "next"
     end
 
-    if o.phase == "tanam" then
+    if o.phase == "paused" then return "paused" end
+
+    if o.phase == "break" then
+        if blocks <= 0 then
+            pabrikSetPhase(o, "plant", "stok block break habis")
+            return "next"
+        end
+        if not breakReady() then return pause("posisi atau grid break belum valid") end
+        local ok, why = pabrikBreak(o)
+        if not ok then return pause(why or "batch break gagal") end
+        pabrikSetPhase(o, "plant", why or "batch break selesai")
+        return "next"
+    end
+
+    if o.phase == "plant" then
         if seeds > 0 then
             FC = pabrikCfg(o, false, true)
             local r = fieldStep()
@@ -5821,48 +5846,37 @@ local function pabrikStep(o)
                 Pabrik.PlantFilterMiss = nil
                 return r
             end
-            -- Tidak ada tile yang lolos scan saat ini. Tetap ikuti transisi
-            -- Pabrik lama agar tidak membuat loop tanam sendiri yang tak berakhir.
             Pabrik.PlantFilterMiss = Pabrik.SupportFilter == true
         end
-        pabrikSetPhase(o, "break", "tanam selesai atau seed habis")
+        pabrikSetPhase(o, "wait_growth", seeds > 0 and "scan tanam selesai" or "seed tidak tersedia")
         return "next"
     end
 
-    if o.phase == "break" then
-        local want
-        if o.breakMode == "always" then
-            want = blocks > 0
-        else -- mode produksi: break hanya untuk dapat seed awal
-            local _, nxt = readyTreeCount(o.whole)
-            want = blocks > 0 and seeds < BOOT_SEEDS and nxt == nil
+    if o.phase == "wait_growth" then
+        local ready, nextReady = readyTreeCount(o.whole, o.seed)
+        if ready > 0 then
+            pabrikSetPhase(o, "harvest", "ada pohon target matang")
+            return "next"
         end
-        if want and breakReady() and pabrikBreak(o) then
-            -- block masih ada: lanjut break (habiskan dulu), block habis: tanam
-            pabrikSetPhase(o, (o.breakMode == "always" and invCount(o.block) > 0) and "break" or "tanam",
-                "sesi break selesai")
-            return "break"
+        if nextReady then return "idle", nextReady, ready end
+        if blocks > 0 then
+            pabrikSetPhase(o, "break", "tidak ada pohon target yang tumbuh")
+            return "next"
         end
-        pabrikSetPhase(o, "tunggu", "break tidak dapat atau tidak perlu dilanjutkan")
-        return "next"
+        return pause("tidak ada pohon target tumbuh dan block break habis")
     end
 
-    -- tunggu
-    local n, nxt = readyTreeCount(o.whole)
-    if n > 0 and os.clock() - (o.idleAt or 0) > 5 then
-        pabrikSetPhase(o, "panen", "ada pohon siap")
-        return "next"
+    if o.phase == "harvest" then
+        FC = pabrikCfg(o, true, false)
+        local r = fieldStep()
+        if r == "idle" then
+            pabrikSetPhase(o, "wait_growth", "target panen siap tidak tersisa")
+            return "next"
+        end
+        return r
     end
-    if o.breakMode == "always" and blocks > 0 and breakReady() then
-        pabrikSetPhase(o, "break", "stok block tersedia")
-        return "next"
-    end
-    if seeds > 0 and os.clock() - (o.plantAt or 0) > 10 then
-        o.plantAt = os.clock() -- sesekali cek tile kosong (misal pohon dipanen orang lain)
-        pabrikSetPhase(o, "tanam", "cek ulang tile kosong")
-        return "next"
-    end
-    return "idle", nxt, n
+
+    return pause("fase tidak dikenal: " .. tostring(o.phase))
 end
 
 local function waitText(sec)
@@ -5873,7 +5887,7 @@ end
 
 local function pabrikLoop(runId)
     local function live() return Pabrik.Running and alive() and Pabrik.RunId == runId end
-    local o = { seed = Pabrik.SeedId, block = Pabrik.BlockId, drop = true, breakMode = "always", live = live }
+    local o = { seed = Pabrik.SeedId, block = Pabrik.BlockId, drop = true, live = live, phase = "validate" }
     while live() do
         task.wait()
         o.whole = Pabrik.WholeWorld
@@ -5885,7 +5899,10 @@ local function pabrikLoop(runId)
         end
         local r, nextReady, nReady = pabrikStep(o)
         if r ~= "idle" then o.stuckAt = nil end
-        if r == "idle" then
+        if r == "paused" then
+            Pabrik.Status = "PAUSED: " .. tostring(Pabrik.PauseReason or "butuh intervensi")
+            if not waitAuto(1000) then break end
+        elseif r == "idle" then
             local seeds, blocks = invCount(o.seed), invCount(o.block)
             if not nextReady and (nReady or 0) == 0 and seeds <= 0 and blocks <= 0 then
                 if Pabrik.stop then Pabrik.stop("Seed & block habis, tidak ada pohon tumbuh") end
@@ -5971,6 +5988,7 @@ function Pabrik.start()
     table.clear(BadEdge)
     table.clear(Pabrik.Events)
     Pabrik.LastTransition = "-"
+    Pabrik.ResumePhase, Pabrik.PauseReason = nil, nil
     Pabrik.PlantFilterMiss = nil
     Pabrik.DropOffUntil, Pabrik.BreakFailUntil = 0, 0
     Pabrik.Running = true
