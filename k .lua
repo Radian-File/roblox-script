@@ -2164,7 +2164,7 @@ end
 ---------------------------------------------------------------------
 -- AKSI DASAR: place & pukul
 ---------------------------------------------------------------------
-local function sendSetTile(layer, x, y, id)
+local function sendSetTile(layer, x, y, id, requireWorldConfirmation)
     if id ~= 0 and State.Visual and Anim.place then Anim.place(x, y, id) end
     if Refs.SetTile then
         local ok, err = pcall(Refs.SetTile, layer, x, y, id, false, false)
@@ -2178,12 +2178,20 @@ local function sendSetTile(layer, x, y, id)
         })
         if not ok then return false end
     elseif SetTileRemote then
-        SetTileRemote:FireServer(layer, x, y, id, false)
+        local ok = pcall(function()
+            SetTileRemote:FireServer(layer, x, y, id, false)
+        end)
+        if not ok then return false end
     else
         return false
     end
-    local grid = Refs.World and Refs.World[layer]
-    if grid and grid[y] then grid[y][x] = id end
+    -- Jalur lama memakai perubahan lokal agar fitur yang belum memiliki referensi
+    -- primary tetap berjalan. Pabrik BREAK tidak boleh memakai optimisme ini:
+    -- ia menunggu grid game benar-benar berubah sebelum menghitung aksi sukses.
+    if not requireWorldConfirmation then
+        local grid = Refs.World and Refs.World[layer]
+        if grid and grid[y] then grid[y][x] = id end
+    end
     return true
 end
 
@@ -2213,7 +2221,7 @@ end
 -- Game abaikan pukulan ke tile yang baru di-place (< 0.3 detik)
 local PLACE_GUARD = 0.32
 
--- Place 1 tile kalau kosong. Hasil: "place" / "habis" / nil
+-- Place 1 tile kalau kosong. Hasil: "place" / "habis" / "place_failed" / nil
 local function tryPlace(x, y)
     local sel = farmBlock()
     if not sel then return nil end
@@ -2226,8 +2234,24 @@ local function tryPlace(x, y)
     if not (cur == 0 and (layer == "bg" or fg == 0)) then return nil end
     if invCount(sel) <= 0 then return "habis" end
 
-    sendSetTile(layer, x, y, sel)
-    if Refs.Inv then pcall(function() Refs.Inv:remove(sel, 1) end) end
+    local confirm = State.Override and State.Override.confirmActions == true
+    if not sendSetTile(layer, x, y, sel, confirm) then
+        State.LastAction = "Request place gagal dikirim (" .. x .. "," .. y .. ")"
+        return confirm and "place_failed" or nil
+    end
+    if confirm then
+        local deadline = os.clock() + 1.5
+        while State.Running and alive() and os.clock() < deadline do
+            if tileAt(layer, x, y) == sel then break end
+            task.wait(0.05)
+        end
+        if tileAt(layer, x, y) ~= sel then
+            State.LastAction = "Place " .. itemName(sel) .. " tidak dikonfirmasi world (" .. x .. "," .. y .. ")"
+            return "place_failed"
+        end
+    elseif Refs.Inv then
+        pcall(function() Refs.Inv:remove(sel, 1) end)
+    end
     local key = x .. "," .. y
     HitCount[key] = nil
     PlacedAt[key] = os.clock()
@@ -2245,7 +2269,7 @@ local function breakableAt(x, y)
     return State.BreakBackground and bg ~= nil and bg ~= 0 and canBreak(bg)
 end
 
--- Pukul 1 kali. Hasil: "hit" / "broke" / nil
+-- Pukul 1 kali. Hasil: "hit" / "broke" / "break_failed" / nil
 -- includeBg = ikut pecah background
 local function tryBreak(x, y, includeBg)
     if includeBg == nil then includeBg = State.BreakBackground end
@@ -2295,6 +2319,43 @@ local function tryBreak(x, y, includeBg)
     hc.n += 1
     sendHitFx(x, y)
     if State.Visual then Anim.swing(x, y, "punch") end
+    if State.Override and State.Override.confirmActions == true then
+        local need = hitsNeeded(id)
+        local deadline = os.clock() + math.max(0.35, State.BreakMs / 1000 + 0.1)
+        while State.Running and alive() and os.clock() < deadline do
+            if tileAt(layer, x, y) ~= id then break end
+            task.wait(0.05)
+        end
+        if tileAt(layer, x, y) ~= id then
+            HitCount[key] = nil
+            Drops.brokeAt[key] = os.clock()
+            State.Broken += 1
+            State.LastAction = "Break " .. itemName(id) .. " (" .. x .. "," .. y .. ")"
+            return "broke"
+        end
+        if hc.n >= need then
+            if not sendSetTile(layer, x, y, 0, true) then
+                State.LastAction = "Request break gagal dikirim (" .. x .. "," .. y .. ")"
+                return "break_failed"
+            end
+            deadline = os.clock() + 1.5
+            while State.Running and alive() and os.clock() < deadline do
+                if tileAt(layer, x, y) ~= id then break end
+                task.wait(0.05)
+            end
+            if tileAt(layer, x, y) == id then
+                State.LastAction = "Break " .. itemName(id) .. " tidak dikonfirmasi world (" .. x .. "," .. y .. ")"
+                return "break_failed"
+            end
+            HitCount[key] = nil
+            Drops.brokeAt[key] = os.clock()
+            State.Broken += 1
+            State.LastAction = "Break " .. itemName(id) .. " (" .. x .. "," .. y .. ")"
+            return "broke"
+        end
+        State.LastAction = "Pukul " .. itemName(id) .. " " .. hc.n .. "/" .. need
+        return "hit"
+    end
     local need = hitsNeeded(id)
     if hc.n >= need then
         sendSetTile(layer, x, y, 0)
@@ -3049,6 +3110,10 @@ local function farmLoop(runId)
                 if r == "habis" then
                     outOfBlock = true
                     break
+                elseif r == "place_failed" then
+                    if State.Override then State.Override.actionError = State.LastAction end
+                    State.Running = false
+                    break
                 elseif r == "place" then
                     acted = true
                     if not waitMs(State.PlaceMs) then break end
@@ -3086,6 +3151,12 @@ local function farmLoop(runId)
                     if i > 1 then task.wait(0.05) end -- jarak antar tile seperti animasi Rayman
                     local r = tryBreak(a.x, a.y)
                     a.n += 1
+                    if r == "break_failed" then
+                        if State.Override then State.Override.actionError = State.LastAction end
+                        State.Running = false
+                        a.done = true
+                        break
+                    end
                     if r then hit, acted = true, true end
                     if r == "broke" then broke = true end
                     -- selesai kalau kosong / tidak bisa dipecah / sudah habis sampai background
@@ -6158,7 +6229,12 @@ local function pabrikBreak(o)
     if not o.live() then return false, "sesi Pabrik tidak lagi aktif" end
     local breakTiles = pabrikBreakTiles()
     if not breakTiles then return false, "tile break tidak dapat dipetakan" end
-    State.Override = { offsets = Pabrik.Tiles, block = o.block, mode = "Place + Break" }
+    State.Override = {
+        offsets = Pabrik.Tiles,
+        block = o.block,
+        mode = "Place + Break",
+        confirmActions = true,
+    }
     State.Quiet = true
     table.clear(HitCount)
     table.clear(PlacedAt)
@@ -6188,9 +6264,15 @@ local function pabrikBreak(o)
     Pabrik.Status = "Break " .. itemName(o.block) .. " di posisi pabrik"
     local ok, e = pcall(farmLoop, id)
     if not ok then warn("[Rocky] Pabrik break error: " .. tostring(e)) end
+    local actionError = State.Override and State.Override.actionError
     State.Running = false
     State.Override = nil
     State.Quiet = false
+    if actionError then
+        Pabrik.BreakFailUntil = os.clock() + 15
+        Pabrik.Status = "BREAK ditunda: " .. actionError
+        return false, actionError
+    end
     if State.Placed + State.Broken == acts0 and invCount(o.block) > 0 then
         Pabrik.BreakFailUntil = os.clock() + 60
         Pabrik.Status = "Sesi break tanpa aksi: cek posisi & tile break (dicoba lagi 1 menit)"
