@@ -386,6 +386,7 @@ local Refs = {
     ViewOk = false,
     DeepTried = {},
     FullScan = false,
+    StateProbe = { holders = 0, lastWhy = nil },
 }
 
 -- Daftar drop di world (diambil dari game)
@@ -1469,19 +1470,33 @@ local function readStateRef(fn, activeOnly)
     if type(s) ~= "table" or type(s.x) ~= "number" or type(s.y) ~= "number" then
         return nil, "state() tidak memberi koordinat x/y"
     end
-    -- Fingerprint ini dipakai versi awal dan membedakan state karakter dari
-    -- table posisi lain yang kebetulan mempunyai x/y.
-    if s.facing == nil or s.vx == nil then return nil, "state() tidak memiliki facing/vx" end
-    -- `grounded` bukan bagian fingerprint awal dan nilainya dapat berubah saat
-    -- karakter bergerak. Jangan membuang sumber koordinat yang valid hanya
-    -- karena capability tersebut tidak tersedia pada saat discovery.
+    -- facing/vx/grounded adalah capability gerak, bukan syarat untuk membuktikan
+    -- bahwa fungsi ini menyediakan posisi karakter. Consumer yang memerlukannya
+    -- tetap membaca field tersebut dari state yang dikembalikan game.
     if activeOnly and s.active == false then return nil, "state karakter inactive" end
     return s
 end
 
-local function isStateHolder(v)
+local function stateCapabilities(s)
+    if type(s) ~= "table" then return "-" end
+    local out = {}
+    for _, name in ipairs({ "x", "y", "facing", "vx", "vy", "grounded", "active" }) do
+        out[#out + 1] = name .. ":" .. type(rawget(s, name))
+    end
+    return table.concat(out, ", ")
+end
+
+local function stateFunctionFrom(v)
     local fn = type(v) == "table" and rawget(v, "state") or nil
-    return readStateRef(fn, true) ~= nil
+    if type(fn) ~= "function" then return nil end
+    local probe = Refs.StateProbe
+    probe.holders = (probe.holders or 0) + 1
+    local state, why = readStateRef(fn, true)
+    if not state then
+        probe.lastWhy = why
+        return nil
+    end
+    return fn
 end
 
 -- Fingerprint world aktif yang dipakai versi awal: grid, ukuran, dan spawn.
@@ -1575,8 +1590,9 @@ local function acceptRefTable(v, source, coreOnly)
         local ok, valid = pcall(Anim.isInventoryRef, v)
         if ok and valid then setRef("Inv", v, source) end
     end
-    if not Refs.State and isStateHolder(v) then
-        setRef("State", rawget(v, "state"), source)
+    if not Refs.State then
+        local stateFn = stateFunctionFrom(v)
+        if stateFn then setRef("State", stateFn, source) end
     end
     if coreOnly then return end
     if not Refs.Menu and type(rawget(v, "openBackpack")) == "function"
@@ -1684,7 +1700,14 @@ local function findRefs(gcObjects, wants)
     end
     Refs.Why.World = Refs.World and nil or "struktur fg/bg/w/h/spawn tidak ditemukan"
     Refs.Why.Inv = Refs.Inv and nil or "object slots + API count/room tidak ditemukan"
-    Refs.Why.State = Refs.State and nil or "state() aktif dengan x/y/facing/vx tidak ditemukan"
+    if Refs.State then
+        Refs.Why.State = nil
+    elseif (Refs.StateProbe.holders or 0) > 0 then
+        Refs.Why.State = ("%d holder state() ditemukan; terakhir ditolak: %s")
+            :format(Refs.StateProbe.holders, tostring(Refs.StateProbe.lastWhy or "hasil tidak valid"))
+    else
+        Refs.Why.State = "tidak ada table dengan fungsi state() pada quick/full scan"
+    end
     Refs.Why.SetTile = Refs.SetTile and nil or (getconsts and "signature tile/placedAt/flips tidak ditemukan" or "getconstants tidak tersedia")
     Refs.Why.Punch = Refs.Punch and nil or (getconsts and "signature newCrack/HarvestProvider tidak ditemukan" or "getconstants tidak tersedia")
     Refs.Why.Others = Refs.Others and nil or "object list() + where()/playerAt() tidak ditemukan"
@@ -1744,8 +1767,9 @@ local function refsDetail()
             lines[#lines + 1] = ok and ("World: sumber " .. tostring(Refs.Source.World or "terdeteksi"))
                 or ("World: TUNGGU - " .. tostring(why))
         elseif name == "State" and value then
-            local _, why = readStateRef(value, true)
-            lines[#lines + 1] = not why and ("State: sumber " .. tostring(Refs.Source.State or "terdeteksi"))
+            local state, why = readStateRef(value, true)
+            lines[#lines + 1] = not why and ("State: sumber " .. tostring(Refs.Source.State or "terdeteksi")
+                .. "; capability " .. stateCapabilities(state))
                 or ("State: TUNGGU - " .. tostring(why))
         elseif value then
             lines[#lines + 1] = name .. ": sumber " .. tostring(Refs.Source[name] or "terdeteksi")
@@ -1781,7 +1805,12 @@ local function logRefDiagnostics()
             if not ok then warn("[Rocky] World ditemukan tetapi belum siap: " .. tostring(why)) end
         elseif name == "State" and value then
             local state, why = readStateRef(value, true)
-            if not state then warn("[Rocky] State ditemukan tetapi belum siap: " .. tostring(why)) end
+            if not state then
+                warn("[Rocky] State ditemukan tetapi belum siap: " .. tostring(why))
+            else
+                print("[Rocky] State aktif dari " .. tostring(Refs.Source.State or "terdeteksi")
+                    .. "; capability " .. stateCapabilities(state))
+            end
         elseif not value and hasFallback then
             print(("[Rocky] Referensi %s primary belum tersedia (%s); fallback aktif: %s")
                 :format(name, tostring(Refs.Why[name] or "alasan tidak diketahui"), tostring(hasFallback)))
@@ -12533,6 +12562,7 @@ local function reconnect(show, full)
     Refs.ViewOk, Refs.TreeTried = false, false
     Refs.DeepTried = {}
     Refs.FullScan = false
+    Refs.StateProbe = { holders = 0, lastWhy = nil }
     Drops.list, Drops.update = nil, nil
     for _, name in ipairs({ "World", "State", "Others", "Trees", "Drop" }) do
         Refs.Source[name], Refs.Why[name] = nil, nil
