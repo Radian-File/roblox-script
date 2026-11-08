@@ -1499,7 +1499,17 @@ function Anim.isInventoryRef(v)
     return okCount and type(count) == "number"
 end
 
-local function findRefs()
+-- Ambil snapshot GC sekali per proses reconnect. Snapshot yang sama dipakai oleh
+-- pencarian referensi utama dan drop agar executor tidak melakukan dua full scan.
+function Anim.gcObjects()
+    if not getgc then return nil, "Executor tidak punya getgc()" end
+    local ok, objects = pcall(getgc, true)
+    if not ok then return nil, tostring(objects) end
+    if type(objects) ~= "table" then return nil, "getgc() tidak mengembalikan table" end
+    return objects
+end
+
+local function findRefs(gcObjects)
     local preservedInv = Anim.isInventoryRef(Refs.Inv) and Refs.Inv or nil
     Refs.World, Refs.SetTile, Refs.State, Refs.Punch, Refs.Menu = nil, nil, nil, nil, nil
     Refs.Inv = preservedInv
@@ -1509,10 +1519,10 @@ local function findRefs()
     Refs.Arm = nil
     Refs.Particles = {}
     Anim.Particles = nil
-    if not getgc then
-        return false, "Executor tidak punya getgc()"
-    end
-    for _, v in ipairs(getgc(true)) do
+    local objects, scanErr = gcObjects, nil
+    if objects == nil then objects, scanErr = Anim.gcObjects() end
+    if type(objects) ~= "table" then return false, scanErr or "Snapshot getgc tidak tersedia" end
+    for index, v in ipairs(objects) do
         local tv = type(v)
         if tv == "table" then
             if not Refs.World then
@@ -1571,6 +1581,7 @@ local function findRefs()
         end
         if Refs.World and Refs.Inv and Refs.SetTile and Refs.State and Refs.Punch
             and Refs.Menu and Refs.Gems and Refs.Hud and Refs.Others then break end
+        if index % 300 == 0 then task.wait() end
     end
     return Refs.World ~= nil
 end
@@ -2093,8 +2104,8 @@ local function isDropList(t)
     return type(first) == "table" and rawget(first, "uid") ~= nil and rawget(first, "frame") ~= nil
 end
 
--- deep = true: boleh pakai getgc (berat, bisa bikin lag / crash di HP) -> hanya dari tombol "Hubungkan ke game"
-local function findDropRefs(deep)
+-- deep = true: boleh pakai snapshot getgc (berat) pada inisialisasi/reconnect terkontrol.
+local function findDropRefs(deep, gcObjects)
     -- 0) fungsi game World.dropList(): daftar drop yang sama untuk semua world (paling ringan)
     local w0 = Refs.World
     local dl = w0 and rawget(w0, "dropList")
@@ -2143,8 +2154,11 @@ local function findDropRefs(deep)
         end
     end
     -- 3) cadangan: cari lewat getgc (hanya kalau diminta: berat)
-    if not Drops.list and deep and getgc then
-        for _, v in ipairs(getgc(true)) do
+    if not Drops.list and deep then
+        local objects = gcObjects
+        if objects == nil then objects = Anim.gcObjects() end
+        if type(objects) ~= "table" then return false end
+        for index, v in ipairs(objects) do
             if type(v) == "table" then
                 local e = rawget(v, 1)
                 if type(e) == "table" and rawget(e, "uid") ~= nil and rawget(e, "frame") ~= nil
@@ -2153,6 +2167,7 @@ local function findDropRefs(deep)
                     break
                 end
             end
+            if index % 300 == 0 then task.wait() end
         end
     end
     return Drops.list ~= nil
@@ -12060,11 +12075,17 @@ local function reconnect(show)
         pcall(doInvRefresh, true)
         task.wait() -- biar dropdown tampil dulu sebelum scan lengkap (scan menahan layar sebentar)
     end
-    -- 2) scan lengkap
-    findRefs()
+    -- 2) scan lengkap. getgc() sendiri tetap bergantung executor, tetapi snapshot
+    -- hanya diambil sekali lalu pemrosesannya dipecah agar UI sempat menggambar.
+    pcall(function() UI.RefInfo:SetDesc("Menghubungkan... memindai referensi game") end)
+    task.wait()
+    local gcObjects, gcErr = Anim.gcObjects()
+    if not gcObjects then warn("[Rocky] Scan referensi gagal: " .. tostring(gcErr)) end
+    findRefs(gcObjects or false)
     watchInventory()
     pcall(doInvRefresh, true) -- langsung di thread ini (thread INIT / antrian UI), bukan thread tombol
-    findDropRefs(true)
+    findDropRefs(true, gcObjects or false)
+    gcObjects = nil -- jangan tahan seluruh snapshot GC setelah reconnect selesai
     Auto.findTreeRefs()
     table.clear(DropFailUntil)
     Anim.fn, Anim.idx = nil, nil
