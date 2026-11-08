@@ -209,6 +209,7 @@ local Pabrik = {
     Planted = 0,
     Dropped = 0,
     StoredBlocks = 0,
+    RefilledBlocks = 0,
     Skip = {},
     Status = "-",
     Traveling = false,
@@ -5858,6 +5859,30 @@ local function pabrikStoreBlocks(o)
     return ok, why
 end
 
+local function pabrikRefillBlocks(o)
+    local policy = pabrikInventoryPolicy()
+    local before = invCount(o.block)
+    local need = policy.refillTarget - before
+    if need <= 0 then return true, "stok block sudah memenuhi target refill" end
+    local ok, why = storageTrip(o, function()
+        Pabrik.Status = ("Ambil %s x%d dari Block Storage"):format(itemName(o.block), need)
+        Move.NoZone = true -- hanya selama refill dan tetap difilter ItemId target
+        local called, result = pcall(Move.fetchDrops, o.live, 8, function(d) return d.id == o.block end, 45)
+        Move.NoZone = false
+        if not called then return false, "error collect storage: " .. tostring(result) end
+        local got = math.max(0, invCount(o.block) - before)
+        if got < need then
+            return false, ("stok storage kurang: dapat %d dari %d block yang dibutuhkan"):format(got, need)
+        end
+        return true, ("ambil %d block dari storage"):format(got)
+    end)
+    local after = invCount(o.block)
+    local changed = math.max(0, after - before)
+    if ok and changed < need then return false, "inventory block tidak mencapai target refill" end
+    if changed > 0 then Pabrik.RefilledBlocks += changed end
+    return ok, why
+end
+
 -- Titik drop sudah diatur? (posisi, WORLD:ID, atau world lain)
 function Pabrik.pointSet()
     if Pabrik.DropX >= 0 then return true end
@@ -5990,9 +6015,20 @@ local function pabrikStep(o)
         return "next"
     end
 
+    if o.phase == "refill_block" then
+        local resume = o.resumePhase or Pabrik.ResumePhase or "break"
+        local ok, why = pabrikRefillBlocks(o)
+        if not ok then return pause(why or "Auto Refill Blocks gagal") end
+        o.resumePhase, Pabrik.ResumePhase = nil, nil
+        pabrikSetPhase(o, resume, why or "Auto Refill Blocks selesai")
+        return "next"
+    end
+
     if o.phase == "break" then
-        if blocks <= 0 then
-            pabrikSetPhase(o, "plant", "stok block break habis")
+        if blocks <= policy.refillAt then
+            o.resumePhase, Pabrik.ResumePhase = "break", "break"
+            pabrikSetPhase(o, "refill_block", ("block %d mencapai ambang refill %d")
+                :format(blocks, policy.refillAt))
             return "next"
         end
         if not breakReady() then return pause("posisi atau grid break belum valid") end
@@ -11310,8 +11346,8 @@ do (function()
                     :format(policy.storeAt, policy.keep, policy.refillAt, policy.refillTarget),
                 "Storage: " .. storageText,
                 ("Drop   : %s | sisakan %d, drop saat >= %d"):format(Pabrik.Drop and dropAt or "mati", Pabrik.Keep, Pabrik.DropAt),
-                ("Hasil  : panen %d | tanam %d | seed drop %d | block simpan %d")
-                    :format(Pabrik.Harvested, Pabrik.Planted, Pabrik.Dropped, Pabrik.StoredBlocks),
+                ("Hasil  : panen %d | tanam %d | seed drop %d | block simpan %d | refill %d")
+                    :format(Pabrik.Harvested, Pabrik.Planted, Pabrik.Dropped, Pabrik.StoredBlocks, Pabrik.RefilledBlocks),
                 "Aksi   : " .. Pabrik.Status,
                 "Flow   : " .. tostring(Pabrik.LastTransition or "-"),
             }, "\n")
