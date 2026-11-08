@@ -47,9 +47,63 @@ local MenuModOk, MenuModule = pcall(require, GameGui:WaitForChild("WorldMenu"))
 local RolesOk, RolesModule = pcall(require, Shared:FindFirstChild("Roles"))
 local SfxOk, SfxModule = pcall(require, Shared:FindFirstChild("Sfx"))
 
-local WindUI = loadstring(game:HttpGet(
-    "https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"
-))()
+-- WindUI adalah dependensi remote. Jangan compile respons error HTML sebagai Luau.
+-- Versi dipin agar API GUI tidak berubah diam-diam ketika release terbaru berganti.
+local WINDUI_VERSION = "1.6.66"
+local WINDUI_URL = "https://github.com/Footagesus/WindUI/releases/download/" .. WINDUI_VERSION .. "/main.lua"
+
+local function loadWindUI()
+    if type(loadstring) ~= "function" then
+        return nil, "loadstring tidak tersedia pada executor ini"
+    end
+
+    print("[WindUI] Mengunduh versi " .. WINDUI_VERSION)
+    local requestOk, source = pcall(function()
+        return game:HttpGet(WINDUI_URL)
+    end)
+    if not requestOk then
+        return nil, "HTTP request gagal: " .. tostring(source)
+    end
+    if type(source) ~= "string" then
+        return nil, "respons HTTP bukan string (" .. type(source) .. ")"
+    end
+    if source:match("^%s*$") then
+        return nil, "respons HTTP kosong"
+    end
+
+    local header = string.lower(source:sub(1, 512))
+    if source:match("^%s*<")
+        or header:find("<!doctype", 1, true)
+        or header:find("<html", 1, true)
+        or header:find("gateway time-out", 1, true) then
+        return nil, "respons HTTP adalah HTML/error page (" .. #source .. " bytes)"
+    end
+
+    print("[WindUI] Download OK; source length: " .. #source)
+    local chunk, compileErr = loadstring(source)
+    if type(chunk) ~= "function" then
+        return nil, "compile gagal: " .. tostring(compileErr)
+    end
+
+    local initOk, library = pcall(chunk)
+    if not initOk then
+        return nil, "inisialisasi library gagal: " .. tostring(library)
+    end
+    if type(library) ~= "table" then
+        return nil, "library mengembalikan " .. type(library) .. ", bukan object WindUI"
+    end
+    if type(library.CreateWindow) ~= "function" then
+        return nil, "object WindUI tidak memiliki CreateWindow"
+    end
+    return library
+end
+
+local WindUI, WindUIError = loadWindUI()
+if not WindUI then
+    warn("[WindUI] GUI tidak diinisialisasi: " .. tostring(WindUIError))
+    G.__KzoyzOpus = nil
+    return
+end
 
 ---------------------------------------------------------------------
 -- PENGATURAN & DATA
@@ -8498,17 +8552,30 @@ do (function()
     if chosen then Config.save(true) end
 end)() end
 
-local Window = I18N.wrap(WindUI:CreateWindow({
-    Title = "Kzoyz x Opus",
-    Icon = "sprout",
-    Author = "v5.9.0 | Tester",
-    Folder = "KzoyzOpus",
-    Size = UDim2.fromOffset(640, 380),
-    Theme = "Dark",
-    Transparent = true,
-    SideBarWidth = 150,
-    ToggleKey = Enum.KeyCode.Insert,  -- PC: tekan Insert untuk buka/tutup menu
-}))
+local windowOk, WindowOrError = pcall(function()
+    return WindUI:CreateWindow({
+        Title = "Kzoyz x Opus",
+        Icon = "sprout",
+        Author = "v5.9.0 | Tester",
+        Folder = "KzoyzOpus",
+        Size = UDim2.fromOffset(640, 380),
+        Theme = "Dark",
+        Transparent = true,
+        SideBarWidth = 150,
+        ToggleKey = Enum.KeyCode.Insert,  -- PC: tekan Insert untuk buka/tutup menu
+    })
+end)
+if not windowOk then
+    warn("[WindUI] CreateWindow gagal; GUI tidak diinisialisasi: " .. tostring(WindowOrError))
+    G.__KzoyzOpus = nil
+    return
+end
+if type(WindowOrError) ~= "table" or type(WindowOrError.Tab) ~= "function" then
+    warn("[WindUI] CreateWindow mengembalikan object window tidak valid; GUI tidak diinisialisasi")
+    G.__KzoyzOpus = nil
+    return
+end
+local Window = I18N.wrap(WindowOrError)
 -- Tombol minimize muncul di mobile DAN PC (OnlyMobile=false), bisa digeser.
 -- Cadangan PC: kalau tombol susah dicari, tekan Insert.
 pcall(function()

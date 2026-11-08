@@ -258,3 +258,10 @@ Rencana detail dan urutan pengerjaan berada di `docs/implementation-plans.md`. S
 - Label konfigurasi storage/inventory mengikuti kamus I18N Indonesia/English.
 - Pemeriksaan statis dilakukan untuk alur state, konfigurasi persisten, helper storage, dan call-site collector. Tidak ada executor, remote game, atau tes Roblox runtime yang dijalankan.
 - Uji runtime terotorisasi yang masih wajib: success/failure place-break, kematangan tree, storage drop hilang/diambil pemain lain, refill partial, world transition, stop di tengah navigasi, dan script re-execution.
+
+## 15. WindUI loader (8 November 2026)
+
+- Loader WindUI pada `k .lua` memakai rilis resmi Footagesus yang dipin ke `1.6.66`: `https://github.com/Footagesus/WindUI/releases/download/1.6.66/main.lua`. Dokumentasi resmi WindUI mendukung pola URL rilis versi-terpilih ini.
+- Sebelum source remote dikompilasi, loader memeriksa kegagalan HTTP, tipe respons, respons kosong, serta ciri HTML/error page. Respons `504 Gateway Time-out` berbentuk HTML dilaporkan sebagai kegagalan terkendali dan tidak dieksekusi.
+- Hasil `loadstring`, eksekusi library, dan keberadaan `CreateWindow` divalidasi. `CreateWindow` juga dibungkus `pcall`; bila gagal, sesi awal dibatalkan sebelum komponen GUI lanjutan dibuat.
+- Perubahan ini hanya diverifikasi secara statis. Keberhasilan download dan kompatibilitas runtime dengan executor masih memerlukan pengujian terotorisasi.
