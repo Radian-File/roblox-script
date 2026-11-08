@@ -203,6 +203,8 @@ local Pabrik = {
     BlockKeep = 30,       -- block yang disisakan saat store
     RefillAt = 10,        -- batas rendah yang memicu refill (tahap storage)
     RefillTarget = 150,   -- target block setelah refill
+    StorageWorld = "",    -- world storage block; kosong = world saat ini
+    StorageX = -1, StorageY = -1,
     Harvested = 0,
     Planted = 0,
     Dropped = 0,
@@ -211,6 +213,7 @@ local Pabrik = {
     Traveling = false,
     Home = "",
     Zone = nil,          -- tempat drop (tidak ikut di-collect), dipakai semua fitur drop
+    BlockStorageZone = nil, -- zona block storage, terpisah dari drop seed
     Row = {},            -- baris tanam yang sedang dikerjakan
     Events = {},         -- observability Pabrik; ring buffer, tidak dipersistenkan
     LastTransition = "-",
@@ -1184,6 +1187,7 @@ Config.add("Pabrik", Pabrik, {
     "SupportFilter", "SupportId",
     "Drop", "Keep", "DropAt", "DropWorld", "DropX", "DropY",
     "BlockStoreAt", "BlockKeep", "RefillAt", "RefillTarget",
+    "StorageWorld", "StorageX", "StorageY",
 })
 Config.add("Bahasa", I18N, { "Saved", "Ask" })
 I18N.Lang = (I18N.Saved == "en") and "en" or "id"
@@ -2142,6 +2146,15 @@ local function inTile(t, x, y)
     return x >= t.x - 0.15 and x < t.x + 1.15 and y >= t.y - 0.15 and y < t.y + 1.15
 end
 
+local function inPabrikProtectedZone(d, world)
+    for _, z in ipairs({ Pabrik.Zone, Pabrik.BlockStorageZone }) do
+        if z and z.world == world and math.abs(d.x - z.x) <= 2.5 and math.abs(d.y - z.y) <= 2.5 then
+            return true
+        end
+    end
+    return false
+end
+
 -- ---------- Collector cepat ----------
 -- Cek daftar drop TIAP FRAME. Drop di area langsung diambil, semuanya sekaligus
 -- (paralel), jadi tidak antri menunggu balasan server satu per satu.
@@ -2171,11 +2184,10 @@ function Drops.remoteTick(list, s)
     local ptx, pty = getPlayerTile()
     local now = os.clock()
     local R = (State.CollectRadius or 3) + 0.2
-    local z = Pabrik.Zone -- tempat drop pabrik tidak ikut diambil lagi
-    if z and z.world ~= (Refs.World and rawget(Refs.World, "name")) then z = nil end
+    local world = Refs.World and rawget(Refs.World, "name")
     for i = #list, 1, -1 do
         local d = list[i]
-        if canTry(d, now) and not (z and math.abs(d.x - z.x) <= 2.5 and math.abs(d.y - z.y) <= 2.5) then
+        if canTry(d, now) and not inPabrikProtectedZone(d, world) then
             local hit = nearArea and math.abs(d.x - cx) <= R and math.abs(d.y - cy) <= R
             if not hit and farmArea and ptx then
                 for key in pairs(offs) do
@@ -3815,8 +3827,7 @@ function Move.fetchDrops(live, maxDist, filter, maxSec)
             Move.FetchFail[d.uid] = now + 300
             return false
         end
-        local z = Pabrik.Zone
-        if z and not Move.NoZone and z.world == rawget(w, "name") and abs(d.x - z.x) <= 2.5 and abs(d.y - z.y) <= 2.5 then
+        if not Move.NoZone and inPabrikProtectedZone(d, rawget(w, "name")) then
             return false
         end
         if filter and not filter(d) then return false end
@@ -5638,6 +5649,34 @@ local function parseDropTarget()
     return name, door
 end
 
+local function parseStorageTarget()
+    local raw = tostring(Pabrik.StorageWorld or ""):gsub("%s", "")
+    local name, door = string.match(raw, "^([^:]*):(.+)$")
+    if not name then name = raw end
+    name = string.upper(name):gsub("[^A-Z0-9]", "")
+    if door == "" then door = nil end
+    return name, door
+end
+
+function Pabrik.storagePointSet()
+    return Pabrik.StorageX >= 0 and Pabrik.StorageY >= 0
+end
+
+local function refreshBlockStorageZone()
+    if not Pabrik.storagePointSet() then
+        Pabrik.BlockStorageZone = nil
+        return
+    end
+    local name = parseStorageTarget()
+    if name == "" then name = Guard.worldName() end
+    if name == "" then return end
+    Pabrik.BlockStorageZone = {
+        world = name,
+        x = Pabrik.StorageX + 0.5,
+        y = Pabrik.StorageY + 0.5,
+    }
+end
+
 -- Pindah world (lewat menu game), bisa langsung ke pintu tertentu
 local function goWorld(name, door)
     if Guard.worldName() ~= "" then
@@ -6064,6 +6103,7 @@ function Pabrik.start()
     if not Refs.Trees then findTreeRefs() end
     Pabrik.BlockId = block
     Pabrik.Home = Guard.worldName()
+    refreshBlockStorageZone()
     table.clear(Pabrik.Skip)
     table.clear(Pabrik.Row)
     table.clear(BadEdge)
@@ -10966,6 +11006,7 @@ do (function()
     local pBreak = box(PTab, "Posisi & tile break", true)
     local pDrop = box(PTab, "Drop seed", true)
     local pInventory = box(PTab, "Inventory block", true)
+    local pStorage = box(PTab, "Block Storage", true)
 
     safe(function()
         UI.PabrikToggle = pCtl:Toggle({
@@ -11106,6 +11147,52 @@ do (function()
         Callback = function(v) Pabrik.RefillTarget = math.floor(v) end,
     })
 
+    safe(function()
+        UI.PabrikStorageWorld = pStorage:Input({
+            Title = "World Block Storage",
+            Desc = "Kosong = world Pabrik ini | WORLD | WORLD:ID",
+            Value = Pabrik.StorageWorld,
+            Placeholder = "STORAGE:1",
+            Callback = function(t)
+                Pabrik.StorageWorld = tostring(t or "")
+                refreshBlockStorageZone()
+            end,
+        })
+    end)
+
+    safe(function()
+        pStorage:Button({
+            Title = "Set posisi Block Storage sekarang",
+            Desc = "Berdiri di titik aman, di luar Break Grid dan jalur kerja",
+            Callback = function()
+                local x, y = Auto.here()
+                if not x then
+                    notify("Pabrik", "Kamu belum masuk world", 3)
+                    return
+                end
+                Pabrik.StorageX, Pabrik.StorageY = x, y
+                if not string.find(Pabrik.StorageWorld or "", ":", 1, true) then
+                    Pabrik.StorageWorld = Guard.worldName()
+                    if UI.PabrikStorageWorld then pcall(function() UI.PabrikStorageWorld:Set(Pabrik.StorageWorld) end) end
+                end
+                refreshBlockStorageZone()
+                notify("Pabrik", ("Block Storage di (%d,%d) %s"):format(x, y, Pabrik.StorageWorld), 4)
+            end,
+        })
+    end)
+
+    safe(function()
+        pStorage:Button({
+            Title = "Hapus Block Storage",
+            Desc = "Auto Store dan Auto Refill akan pause sampai titik diatur lagi",
+            Callback = function()
+                Pabrik.StorageX, Pabrik.StorageY = -1, -1
+                Pabrik.BlockStorageZone = nil
+                notify("Pabrik", "Block Storage dihapus", 3)
+            end,
+        })
+    end)
+
     local function countKeys(t)
         local n = 0
         for _ in pairs(t) do n += 1 end
@@ -11127,6 +11214,12 @@ do (function()
                 :format(trees.ready or 0, trees.growing or 0, trees.unknown or 0,
                     math.max(trees.unreachable or 0, Pabrik.UnreachableCount or 0))
                 or "belum dipindai"
+            local storageName, storageDoor = parseStorageTarget()
+            local storageText = Pabrik.storagePointSet()
+                and ((storageName ~= "" and storageName or "world Pabrik")
+                    .. (storageDoor and (":" .. storageDoor) or "")
+                    .. (" (%d,%d)"):format(Pabrik.StorageX, Pabrik.StorageY))
+                or "belum diatur"
             local txt = table.concat({
                 "Status : " .. (Pabrik.Running and ("JALAN - fase " .. tostring(Pabrik.Phase or "-")) or "BERHENTI"),
                 ("Seed   : %s x%d | block %s x%d"):format(seed and itemName(seed) or "-", seed and invCount(seed) or 0,
@@ -11137,6 +11230,7 @@ do (function()
                 "Pohon  : " .. treeText,
                 ("Block  : simpan >= %d, sisakan %d, refill <= %d ke %d")
                     :format(policy.storeAt, policy.keep, policy.refillAt, policy.refillTarget),
+                "Storage: " .. storageText,
                 ("Drop   : %s | sisakan %d, drop saat >= %d"):format(Pabrik.Drop and dropAt or "mati", Pabrik.Keep, Pabrik.DropAt),
                 ("Hasil  : panen %d | tanam %d | di-drop %d"):format(Pabrik.Harvested, Pabrik.Planted, Pabrik.Dropped),
                 "Aksi   : " .. Pabrik.Status,

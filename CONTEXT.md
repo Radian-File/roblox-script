@@ -241,10 +241,10 @@ Untuk setiap bug, dokumentasikan: **gejala → bukti fungsi/baris → hipotesis 
 | 1 | Flow deterministik `BREAK -> PLANT -> WAIT_GROWTH -> HARVEST -> REPEAT` | Diimplementasikan secara statis; belum diuji runtime |
 | 2 | Harvest seluruh tree target yang dipindai | Diimplementasikan secara statis: filter seed target dan retry target unreachable; belum diuji runtime |
 | 3 | Wait until trees mature | Diimplementasikan secara statis: tree growing ditunggu, metadata hilang menjadi `PAUSED`; belum diuji runtime |
-| 4 | Set Block Storage Point | Direncanakan |
+| 4 | Set Block Storage Point | Diimplementasikan secara statis: world/koordinat persisten dan validasi dasar; belum diuji runtime |
 | 5 | Auto Store Blocks | Direncanakan |
 | 6 | Auto Refill Blocks | Direncanakan |
-| 7 | Block Storage Protection | Direncanakan |
+| 7 | Block Storage Protection | Diimplementasikan secara statis: zona storage terpisah dikecualikan oleh collector script; native pickup belum terverifikasi |
 | 8 | Perbaikan inventory threshold dan recovery | Threshold persisten dan pause aman diimplementasikan secara statis; Auto Store/Refill masih terpisah |
 | 9 | Selected Plant Platform / Support Block Filter | Diimplementasikan secara statis; belum diuji runtime |
 
