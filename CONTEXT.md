@@ -245,7 +245,7 @@ Untuk setiap bug, dokumentasikan: **gejala → bukti fungsi/baris → hipotesis 
 | 5 | Auto Store Blocks | Direncanakan |
 | 6 | Auto Refill Blocks | Direncanakan |
 | 7 | Block Storage Protection | Direncanakan |
-| 8 | Perbaikan inventory threshold dan recovery | Rekomendasi audit; belum disepakati/diimplementasikan |
+| 8 | Perbaikan inventory threshold dan recovery | Threshold persisten dan pause aman diimplementasikan secara statis; Auto Store/Refill masih terpisah |
 | 9 | Selected Plant Platform / Support Block Filter | Diimplementasikan secara statis; belum diuji runtime |
 
 Rencana detail dan urutan pengerjaan nomor 1-8 berada di `docs/implementation-plans.md`. Dokumen tersebut adalah proposal untuk review, bukan bukti bahwa rencana sudah disetujui atau sudah tersedia di source.

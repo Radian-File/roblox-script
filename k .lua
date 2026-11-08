@@ -199,6 +199,10 @@ local Pabrik = {
     DropAt = 200,        -- drop kalau seed sudah sebanyak ini
     DropWorld = "",      -- "" = world ini | "WORLD" | "WORLD:ID"
     DropX = -1, DropY = -1,
+    BlockStoreAt = 170,   -- mulai simpan block sebelum limit item
+    BlockKeep = 30,       -- block yang disisakan saat store
+    RefillAt = 10,        -- batas rendah yang memicu refill (tahap storage)
+    RefillTarget = 150,   -- target block setelah refill
     Harvested = 0,
     Planted = 0,
     Dropped = 0,
@@ -1177,6 +1181,7 @@ Config.add("Pabrik", Pabrik, {
     "SeedId", "WholeWorld", "Tiles", "BreakX", "BreakY",
     "SupportFilter", "SupportId",
     "Drop", "Keep", "DropAt", "DropWorld", "DropX", "DropY",
+    "BlockStoreAt", "BlockKeep", "RefillAt", "RefillTarget",
 })
 Config.add("Bahasa", I18N, { "Saved", "Ask" })
 I18N.Lang = (I18N.Saved == "en") and "en" or "id"
@@ -5493,6 +5498,14 @@ end
 local BOOT_SEEDS = 10 -- (mode produksi) cukup seed segini untuk mulai tanam
 local CAP = 190       -- batas aman jumlah item (maksimal 200 per item)
 
+local function pabrikInventoryPolicy()
+    local storeAt = math.clamp(math.floor(tonumber(Pabrik.BlockStoreAt) or 170), 1, CAP)
+    local keep = math.clamp(math.floor(tonumber(Pabrik.BlockKeep) or 30), 0, storeAt - 1)
+    local refillAt = math.clamp(math.floor(tonumber(Pabrik.RefillAt) or 10), 0, CAP - 1)
+    local refillTarget = math.clamp(math.floor(tonumber(Pabrik.RefillTarget) or 150), refillAt + 1, CAP)
+    return { storeAt = storeAt, keep = keep, refillAt = refillAt, refillTarget = refillTarget }
+end
+
 local function pabrikCfg(o, harvest, plant)
     local plantSet, area = nil, nil
     local supportEnabled = Pabrik.SupportFilter == true
@@ -5798,6 +5811,7 @@ end
 -- Hasil: "drop" | "work" | "move" | "wait" | "break" | "next" | "idle" (+ detik ke pohon siap)
 local function pabrikStep(o)
     local seeds, blocks = invCount(o.seed), invCount(o.block)
+    local policy = pabrikInventoryPolicy()
     if not o.phase then pabrikSetPhase(o, "validate", "mulai sesi") end
 
     local function pause(reason)
@@ -5867,6 +5881,13 @@ local function pabrikStep(o)
     end
 
     if o.phase == "harvest" then
+        if blocks >= policy.storeAt then
+            return pause(("block %d mencapai ambang simpan %d; Block Storage belum dikonfigurasi")
+                :format(blocks, policy.storeAt))
+        end
+        if seeds >= CAP and not (Pabrik.Drop and Pabrik.pointSet()) then
+            return pause(("seed %d mencapai batas aman tanpa titik drop aktif"):format(seeds))
+        end
         FC = pabrikCfg(o, true, false)
         local r = fieldStep()
         if r == "idle" then
@@ -10882,6 +10903,7 @@ do (function()
     local pCtl = box(PTab, "Kontrol", true)
     local pBreak = box(PTab, "Posisi & tile break", true)
     local pDrop = box(PTab, "Drop seed", true)
+    local pInventory = box(PTab, "Inventory block", true)
 
     safe(function()
         UI.PabrikToggle = pCtl:Toggle({
@@ -10994,6 +11016,34 @@ do (function()
         Callback = function(v) Pabrik.DropAt = math.floor(v) end,
     })
 
+    addNumber(pInventory, {
+        Title = "Simpan block saat",
+        Desc = "Pabrik pause sampai Block Storage tersedia",
+        Min = 1, Max = CAP, Step = 1, Default = Pabrik.BlockStoreAt,
+        Callback = function(v) Pabrik.BlockStoreAt = math.floor(v) end,
+    })
+
+    addNumber(pInventory, {
+        Title = "Sisakan block storage",
+        Desc = "Jumlah block yang nanti dipertahankan saat Auto Store",
+        Min = 0, Max = CAP - 1, Step = 1, Default = Pabrik.BlockKeep,
+        Callback = function(v) Pabrik.BlockKeep = math.floor(v) end,
+    })
+
+    addNumber(pInventory, {
+        Title = "Refill saat block <=",
+        Desc = "Ambang untuk Auto Refill pada fase BREAK",
+        Min = 0, Max = CAP - 1, Step = 1, Default = Pabrik.RefillAt,
+        Callback = function(v) Pabrik.RefillAt = math.floor(v) end,
+    })
+
+    addNumber(pInventory, {
+        Title = "Target refill block",
+        Desc = "Jumlah block yang dituju setelah Auto Refill",
+        Min = 1, Max = CAP, Step = 1, Default = Pabrik.RefillTarget,
+        Callback = function(v) Pabrik.RefillTarget = math.floor(v) end,
+    })
+
     local function countKeys(t)
         local n = 0
         for _ in pairs(t) do n += 1 end
@@ -11009,6 +11059,7 @@ do (function()
             local support = Pabrik.SupportFilter
                 and (Pabrik.SupportId and itemName(Pabrik.SupportId) or "belum dipilih")
                 or "semua block valid"
+            local policy = pabrikInventoryPolicy()
             local txt = table.concat({
                 "Status : " .. (Pabrik.Running and ("JALAN - fase " .. tostring(Pabrik.Phase or "-")) or "BERHENTI"),
                 ("Seed   : %s x%d | block %s x%d"):format(seed and itemName(seed) or "-", seed and invCount(seed) or 0,
@@ -11016,6 +11067,8 @@ do (function()
                 ("Break  : %s | tile %d"):format(Pabrik.BreakX >= 0 and ("(" .. Pabrik.BreakX .. "," .. Pabrik.BreakY .. ")")
                     or "belum diatur", countKeys(Pabrik.Tiles)),
                 "Tanam  : " .. support .. (Pabrik.PlantFilterMiss and " | tidak ada posisi cocok saat ini" or ""),
+                ("Block  : simpan >= %d, sisakan %d, refill <= %d ke %d")
+                    :format(policy.storeAt, policy.keep, policy.refillAt, policy.refillTarget),
                 ("Drop   : %s | sisakan %d, drop saat >= %d"):format(Pabrik.Drop and dropAt or "mati", Pabrik.Keep, Pabrik.DropAt),
                 ("Hasil  : panen %d | tanam %d | di-drop %d"):format(Pabrik.Harvested, Pabrik.Planted, Pabrik.Dropped),
                 "Aksi   : " .. Pabrik.Status,
