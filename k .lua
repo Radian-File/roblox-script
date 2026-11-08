@@ -1631,8 +1631,8 @@ local function findRefs(gcObjects, wants)
     Refs.Hud = nil
     Refs.Others = nil
     Refs.Arm = nil
-    Refs.Trees, Refs.TreeMode, Refs.TreeP = nil, nil, nil
-    Refs.TreeTried, Refs.ViewOk = false, false
+    -- Trees dan fallback View hanya di-reset oleh reconnect saat sesi world
+    -- berubah. Deep scan on-demand tidak boleh memutus Pabrik/Farmer aktif.
     Refs.Particles = {}
     Refs.Source, Refs.Why = {}, {}
     if Refs.Inv then Refs.Source.Inv = "preserved" end
