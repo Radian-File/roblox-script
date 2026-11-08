@@ -1,6 +1,6 @@
 # Kzoyz x Opus — Growblox Automation Script
 
-> **Status:** Dokumentasi berdasarkan pembacaan statis source aktif `k .lua` (snapshot 8 November 2026). `Selected Plant Platform` untuk Pabrik telah dipatch secara statis; roadmap flow, harvest, growth, dan storage masih belum diimplementasikan. Ini **bukan** klaim bahwa semua fitur telah berhasil diuji di runtime.
+> **Status:** Dokumentasi berdasarkan pembacaan statis source aktif `k .lua` (snapshot 8 November 2026). Roadmap Pabrik (state machine, tree growth/harvest, storage, store/refill, dan Selected Plant Platform) telah dipatch secara statis. Ini **bukan** klaim bahwa semua fitur telah berhasil diuji di runtime.
 
 ## Ringkasan proyek
 
@@ -139,7 +139,9 @@ Prioritas pengujian pengembangan:
 
 ## Arah pengembangan
 
-**Status roadmap saat ini:** nomor 9, `Selected Plant Platform`, sudah dipatch secara statis pada fase PLANT Pabrik dan belum diuji runtime. Nomor 1-8—flow deterministik, Harvest All Scanned Trees, Wait Until Trees Mature, Block Storage Point, Auto Store Blocks, Auto Refill Blocks, Block Storage Protection, dan kebijakan inventory/recovery—masih berupa rencana. Proposal urutan implementasinya tersedia di `docs/implementation-plans.md` untuk review.
+**Pembaruan implementasi:** roadmap Pabrik nomor 0-9 sekarang telah dipatch secara statis. Bagian berikut yang memakai kata “direncanakan” adalah konteks desain historis dan tidak menggantikan status terbaru di `CONTEXT.md`. Validasi runtime tetap belum dilakukan.
+
+**Status roadmap saat ini:** nomor 0-9 telah dipatch secara statis: observability, state machine, target tree/growth, threshold inventory, Block Storage Point/proteksi, Auto Store/Refill, dan Selected Plant Platform. Proposal serta checklist review berada di `docs/implementation-plans.md`; tes runtime masih wajib.
 
 **Sedang ditinjau, belum diimplementasikan:** pengendali Pabrik yang deterministik (`BREAK → PLANT → WAIT_GROWTH → HARVEST → REPEAT`) serta `Set Block Storage Point`, `Auto Store Blocks`, dan `Auto Refill Blocks`. Rincian desain, risiko, dan keputusan yang belum ditetapkan ada di `CONTEXT.md`.
 

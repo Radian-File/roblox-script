@@ -2,7 +2,7 @@
 
 > **Terakhir disusun:** 8 November 2026  
 > **Sumber:** pembacaan statis source aktif `k .lua` dan laporan pengujian pengguna.  
-> **Status:** roadmap Pabrik nomor 1-8 masih *audit/desain, belum diimplementasikan*. Nomor 9 (*Selected Plant Platform*) telah diimplementasikan secara statis dan belum diuji runtime.
+> **Status:** roadmap Pabrik nomor 0-9 telah dipatch secara statis. Semua flow, storage, dan collector masih memerlukan pengujian runtime terotorisasi sebelum dinyatakan reliabel.
 
 ## 1. Tujuan pengguna
 
@@ -60,7 +60,7 @@ Ini adalah **laporan runtime pengguna**. Penyebab spesifik pohon muda terkena ak
 
 Jangan menyatakan hipotesis sebagai penyebab pasti sebelum ada log atau tes yang memadai.
 
-## 5. Desain target nomor 1-8 (belum diimplementasikan)
+## 5. Desain target nomor 1-8 (telah dipatch secara statis, belum diuji runtime)
 
 ```mermaid
 stateDiagram-v2
@@ -247,5 +247,14 @@ Untuk setiap bug, dokumentasikan: **gejala → bukti fungsi/baris → hipotesis 
 | 7 | Block Storage Protection | Diimplementasikan secara statis: zona storage terpisah dikecualikan oleh collector script; native pickup belum terverifikasi |
 | 8 | Perbaikan inventory threshold dan recovery | Threshold persisten dan pause aman diimplementasikan secara statis; Auto Store/Refill masih terpisah |
 | 9 | Selected Plant Platform / Support Block Filter | Diimplementasikan secara statis; belum diuji runtime |
+| 10 | Hardening lifecycle, konflik controller, I18N, dan checklist regresi | Diimplementasikan secara statis; belum diuji runtime |
 
-Rencana detail dan urutan pengerjaan nomor 1-8 berada di `docs/implementation-plans.md`. Dokumen tersebut adalah proposal untuk review, bukan bukti bahwa rencana sudah disetujui atau sudah tersedia di source.
+Rencana detail dan urutan pengerjaan berada di `docs/implementation-plans.md`. Status pada dokumen tersebut mencatat patch statis; dokumen itu bukan bukti keberhasilan runtime.
+
+## 14. Status hardening dan verifikasi
+
+- `Pabrik.start()` kini menghentikan Build dan Vending agar tidak ada controller gerak kedua yang aktif.
+- `Pabrik.stop()` dan `Session.Cleanup` mereset `Move.NoZone`, sehingga izin pickup storage sementara tidak bocor ke sesi berikutnya.
+- Label konfigurasi storage/inventory mengikuti kamus I18N Indonesia/English.
+- Pemeriksaan statis dilakukan untuk alur state, konfigurasi persisten, helper storage, dan call-site collector. Tidak ada executor, remote game, atau tes Roblox runtime yang dijalankan.
+- Uji runtime terotorisasi yang masih wajib: success/failure place-break, kematangan tree, storage drop hilang/diambil pemain lain, refill partial, world transition, stop di tengah navigasi, dan script re-execution.

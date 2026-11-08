@@ -630,6 +630,22 @@ I18N.EN = {
     ["Untuk ditanam lagi"] = "For replanting",
     ["Drop kalau seed sudah"] = "Drop when seeds reach",
     ["Contoh 200 & sisakan 50 = drop 150"] = "Example 200 & keep 50 = drop 150",
+    ["Inventory block"] = "Block inventory",
+    ["Simpan block saat"] = "Store blocks at",
+    ["Pabrik pause sampai Block Storage tersedia"] = "Factory pauses until Block Storage is available",
+    ["Sisakan block storage"] = "Blocks to keep in inventory",
+    ["Jumlah block yang nanti dipertahankan saat Auto Store"] = "Blocks kept in inventory during Auto Store",
+    ["Refill saat block <="] = "Refill when blocks <=",
+    ["Ambang untuk Auto Refill pada fase BREAK"] = "Auto Refill threshold during BREAK",
+    ["Target refill block"] = "Block refill target",
+    ["Jumlah block yang dituju setelah Auto Refill"] = "Target block count after Auto Refill",
+    ["Block Storage"] = "Block Storage",
+    ["World Block Storage"] = "Block Storage world",
+    ["Kosong = world Pabrik ini | WORLD | WORLD:ID"] = "Empty = this Factory world | WORLD | WORLD:ID",
+    ["Set posisi Block Storage sekarang"] = "Set current Block Storage position",
+    ["Berdiri di titik aman, di luar Break Grid dan jalur kerja"] = "Stand in a safe spot outside the Break Grid and work path",
+    ["Hapus Block Storage"] = "Clear Block Storage",
+    ["Auto Store dan Auto Refill akan pause sampai titik diatur lagi"] = "Auto Store and Auto Refill pause until a point is set again",
     ["World drop"] = "Drop world",
     ["Kosong = world ini | WORLD | WORLD:ID (masuk lewat pintu ID)"] = "Empty = this world | WORLD | WORLD:ID (enter via door ID)",
     ["Pakai posisi sekarang untuk drop"] = "Use current position for dropping",
@@ -6175,6 +6191,8 @@ function Pabrik.stop(reason)
     pabrikEvent(nil, "stop", reason or "dihentikan")
     Pabrik.Running = false
     Pabrik.Traveling = false
+    Pabrik.ResumePhase, Pabrik.PauseReason = nil, nil
+    Move.NoZone = false
     if State.Override then State.Running = false end
     autoEnd()
     releaseInput()
@@ -6214,6 +6232,8 @@ function Pabrik.start()
     if Clear.Running then stopClear("Dihentikan karena Pabrik dimulai") end
     if Farmer.Running then stopFarmer("Dihentikan karena Pabrik dimulai") end
     if Splice.Running and Splice.stop then Splice.stop("Dihentikan karena Pabrik dimulai") end
+    if Build.Running and Build.stop then Build.stop("Dihentikan karena Pabrik dimulai") end
+    if Vend.Running and Vend.stop then Vend.stop("Dihentikan karena Pabrik dimulai") end
     if not Refs.Trees then findTreeRefs() end
     Pabrik.BlockId = block
     Pabrik.Home = Guard.worldName()
@@ -12089,6 +12109,7 @@ Session.Cleanup = function()
     Rejoin.On = false
     Pabrik.Running = false
     Build.Running = false
+    Move.NoZone = false
     State.Override = nil
     pcall(Auto.stopWalk)
     AutoInput.active = false

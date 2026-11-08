@@ -111,4 +111,4 @@ Untuk audit/review: **temuan → bukti kode → risiko → rekomendasi → prior
 
 Untuk implementasi yang diminta: **ringkasan patch → file/fungsi diubah → perilaku baru → pengujian yang dilakukan → batasan dan risiko → langkah uji pengguna**.
 
-**Status terbaru:** `Selected Plant Platform` / Support Block Filter (roadmap nomor 9) telah diimplementasikan secara statis dan belum diuji runtime. Roadmap Pabrik nomor 1-8 masih memerlukan persetujuan implementasi terpisah.
+**Status terbaru:** roadmap Pabrik nomor 0-9 telah diimplementasikan secara statis, termasuk state machine, tree growth/harvest, Block Storage, Auto Store/Refill, dan Support Block Filter. Semua perubahan tetap memerlukan pengujian runtime terotorisasi sebelum dinyatakan reliabel.
