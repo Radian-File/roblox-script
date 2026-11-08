@@ -1470,6 +1470,7 @@ local function readStateRef(fn, activeOnly)
     -- Fingerprint ini dipakai versi awal dan membedakan state karakter dari
     -- table posisi lain yang kebetulan mempunyai x/y.
     if s.facing == nil or s.vx == nil then return nil, "state() tidak memiliki facing/vx" end
+    if type(s.grounded) ~= "boolean" then return nil, "state() tidak memiliki status grounded" end
     if activeOnly and s.active == false then return nil, "state karakter inactive" end
     return s
 end
@@ -1663,7 +1664,7 @@ local function findRefs(gcObjects)
     end
     Refs.Why.World = Refs.World and nil or "struktur fg/bg/w/h/spawn tidak ditemukan"
     Refs.Why.Inv = Refs.Inv and nil or "object slots + API count/room tidak ditemukan"
-    Refs.Why.State = Refs.State and nil or "state() aktif dengan x/y/facing/vx tidak ditemukan"
+    Refs.Why.State = Refs.State and nil or "state() aktif dengan x/y/facing/vx/grounded tidak ditemukan"
     Refs.Why.SetTile = Refs.SetTile and nil or (getconsts and "signature tile/placedAt/flips tidak ditemukan" or "getconstants tidak tersedia")
     Refs.Why.Punch = Refs.Punch and nil or (getconsts and "signature newCrack/HarvestProvider tidak ditemukan" or "getconstants tidak tersedia")
     Refs.Why.Others = Refs.Others and nil or "object list() + where()/playerAt() tidak ditemukan"
@@ -1713,7 +1714,15 @@ local function refsDetail()
     local lines = { refsText() }
     for _, name in ipairs({ "World", "Inv", "SetTile", "State", "Punch", "Drop", "Trees", "Others" }) do
         local value = (name == "Drop") and Drops.list or Refs[name]
-        if value then
+        if name == "World" and value then
+            local ok, why = worldReady(value)
+            lines[#lines + 1] = ok and ("World: sumber " .. tostring(Refs.Source.World or "terdeteksi"))
+                or ("World: TUNGGU - " .. tostring(why))
+        elseif name == "State" and value then
+            local _, why = readStateRef(value, true)
+            lines[#lines + 1] = not why and ("State: sumber " .. tostring(Refs.Source.State or "terdeteksi"))
+                or ("State: TUNGGU - " .. tostring(why))
+        elseif value then
             lines[#lines + 1] = name .. ": sumber " .. tostring(Refs.Source[name] or "terdeteksi")
         elseif name == "Trees" and not Refs.TreeTried then
             lines[#lines + 1] = "Trees: discovery ditunda sampai fitur membutuhkan"
@@ -1738,7 +1747,13 @@ local function logRefDiagnostics()
         local value = (name == "Drop") and Drops.list or Refs[name]
         local hasFallback = (name == "SetTile" and setTileFallbackSource())
             or (name == "Punch" and punchFallbackSource()) or (name == "State" and Refs.ViewOk)
-        if not value and hasFallback then
+        if name == "World" and value then
+            local ok, why = worldReady(value)
+            if not ok then warn("[Rocky] World ditemukan tetapi belum siap: " .. tostring(why)) end
+        elseif name == "State" and value then
+            local state, why = readStateRef(value, true)
+            if not state then warn("[Rocky] State ditemukan tetapi belum siap: " .. tostring(why)) end
+        elseif not value and hasFallback then
             print(("[Rocky] Referensi %s primary belum tersedia (%s); fallback aktif: %s")
                 :format(name, tostring(Refs.Why[name] or "alasan tidak diketahui"), tostring(hasFallback)))
         elseif not value and not (name == "Trees" and not Refs.TreeTried) then
@@ -2812,7 +2827,10 @@ local function validate()
     local doPlace = farmMode() ~= "Break saja"
     if not Refs.World then return "Data world belum ketemu. Tekan 'Hubungkan ke game'" end
     if next(farmOffsets()) == nil then return "Pilih tile dulu di Grid Tile" end
-    if not getPlayerTile() then return "Kamu belum masuk world" end
+    if not getPlayerTile() then
+        local _, why = readStateRef(Refs.State, true)
+        return "Posisi karakter belum siap: " .. tostring(why or "fallback PlayerView tidak tersedia")
+    end
     if doPlace and not farmBlock() then return "Pilih block dari inventori" end
     return nil
 end
@@ -3104,12 +3122,31 @@ local function punchReach() return hudRange("punchRange", 2.5) end
 local function buildReach() return hudRange("buildRange", 2.5) end
 
 local function playerState()
-    if not Refs.State then return nil end
-    local ok, s = pcall(Refs.State)
-    if ok and type(s) == "table" and type(s.x) == "number" and type(s.y) == "number" and s.active ~= false then
-        return s
+    return readStateRef(Refs.State, true)
+end
+
+local function automationPreflight(opts)
+    opts = opts or {}
+    local issues = {}
+    if opts.drops and not Drops.list then pcall(findDropRefs, false) end
+    local worldOk, worldWhy = worldReady(Refs.World)
+    if not worldOk then issues[#issues + 1] = "World belum siap: " .. tostring(worldWhy) end
+    if opts.inventory and not Refs.Inv then issues[#issues + 1] = "Inventori belum terhubung" end
+    if opts.state ~= false then
+        local _, stateWhy = readStateRef(Refs.State, true)
+        if stateWhy then issues[#issues + 1] = "Posisi karakter belum siap: " .. stateWhy end
     end
-    return nil
+    if opts.movement and not OrigIsDown then
+        issues[#issues + 1] = "Kontrol gerak WorldMenu.isDown belum tersedia"
+    end
+    if opts.place and not (Refs.SetTile or setTileFallbackSource()) then
+        issues[#issues + 1] = "Jalur place/setTile belum tersedia"
+    end
+    if opts.punch and not (Refs.Punch or punchFallbackSource()) then
+        issues[#issues + 1] = "Jalur pukul belum tersedia"
+    end
+    if opts.drops and not Drops.list then issues[#issues + 1] = "Data drop belum tersedia" end
+    return (#issues > 0) and table.concat(issues, " | ") or nil
 end
 
 local function fgIdAt(x, y)
@@ -4647,11 +4684,7 @@ stopClear = function(reason)
 end
 
 local function checkAutoStart()
-    if not Refs.World then return "Data world belum ketemu. Tekan 'Hubungkan ke game'" end
-    if not Refs.Punch then return "Fungsi pukul game belum ketemu. Tekan 'Hubungkan ke game'" end
-    if not OrigIsDown then return "Kontrol gerak game (WorldMenu.isDown) tidak ketemu" end
-    if not playerState() then return "Kamu belum masuk world" end
-    return nil
+    return automationPreflight({ movement = true, punch = true })
 end
 
 local function startClear()
@@ -5387,7 +5420,13 @@ end
 
 local function startFarmer()
     if Farmer.Running then return end
-    local err = checkAutoStart()
+    local err = automationPreflight({
+        inventory = true,
+        movement = true,
+        place = Farmer.Plant,
+        punch = Farmer.Harvest,
+        drops = Farmer.Collect,
+    })
     if not err and not Farmer.Harvest and not Farmer.Plant then
         err = "Aktifkan Auto Harvest atau Auto Plant"
     end
@@ -5610,9 +5649,9 @@ local function spliceRoamLoop(runId)
 end
 
 local function startSpliceRoam()
-    if not OrigIsDown then return "Kontrol gerak game (WorldMenu.isDown) tidak ketemu" end
+    local err = automationPreflight({ inventory = true, movement = true, place = true, punch = true })
+    if err then return err end
     table.clear(Splice.Row)
-    if not playerState() then return "Kamu belum masuk world" end
     if not Refs.Trees then findTreeRefs() end
     table.clear(Splice.Skip)
     table.clear(SpliceFail)
@@ -6647,22 +6686,25 @@ end
 
 function Pabrik.start()
     if Pabrik.Running then return end
-    local err
+    local err = automationPreflight({
+        inventory = true,
+        movement = true,
+        place = true,
+        punch = true,
+        drops = true,
+    })
     local block = blockOfSeed(Pabrik.SeedId)
-    if not Refs.World then
-        err = "Data world belum ketemu. Tekan 'Hubungkan ke game'"
-    elseif not OrigIsDown then
-        err = "Kontrol gerak game (WorldMenu.isDown) tidak ketemu"
-    elseif not playerState() then
-        err = "Kamu belum masuk world"
-    elseif not Pabrik.SeedId then
+    if not err and not Pabrik.SeedId then
         err = "Pilih seed pabrik dulu"
-    elseif not block then
+    elseif not err and not block then
         err = "Block dari seed ini tidak ketemu"
-    elseif Pabrik.SupportFilter and (not Pabrik.SupportId or not ItemDB[Pabrik.SupportId]) then
+    elseif not err and Pabrik.SupportFilter and (not Pabrik.SupportId or not ItemDB[Pabrik.SupportId]) then
         err = "Pilih block penyangga Pabrik dulu"
-    elseif not Pabrik.WholeWorld and #landRows() == 0 then
+    elseif not err and not Pabrik.WholeWorld and #landRows() == 0 then
         err = "Atur lahan dulu (tab Lahan)"
+    end
+    if not err and not Refs.Trees and not findTreeRefs() then
+        err = "Data pohon belum tersedia; Pabrik tidak dapat memvalidasi WAIT_GROWTH/HARVEST"
     end
     if err then
         notify("Pabrik", err, 4)
@@ -7355,14 +7397,8 @@ end
 
 function Vend.start()
     if Vend.Running then return end
-    local err
-    if not Refs.World then
-        err = "Data world belum ketemu. Tekan 'Hubungkan ke game'"
-    elseif not OrigIsDown then
-        err = "Kontrol gerak game (WorldMenu.isDown) tidak ketemu"
-    elseif not playerState() then
-        err = "Kamu belum masuk world"
-    elseif type(rawget(Refs.World, "vendCall")) ~= "function" then
+    local err = automationPreflight({ inventory = true, movement = true, drops = true })
+    if not err and type(rawget(Refs.World, "vendCall")) ~= "function" then
         err = "Fungsi vending game tidak ketemu"
     end
     if err then
@@ -8307,17 +8343,11 @@ end
 
 function Build.start()
     if Build.Running then return end
-    local err
+    local err = automationPreflight({ inventory = true, movement = true, place = true, punch = true, drops = true })
     local it = Build.BlockId and ItemDB[Build.BlockId]
-    if not Refs.World then
-        err = "Data world belum ketemu. Tekan 'Hubungkan ke game'"
-    elseif not OrigIsDown then
-        err = "Kontrol gerak game (WorldMenu.isDown) tidak ketemu"
-    elseif not playerState() then
-        err = "Kamu belum masuk world"
-    elseif not (it and it.solid) then
+    if not err and not (it and it.solid) then
         err = "Pilih block padat untuk lahan"
-    elseif #landRows() == 0 then
+    elseif not err and #landRows() == 0 then
         err = "Tidak ada baris yang muat (Y atas terlalu bawah). Berdiri di pojok kiri-ATAS lahan lalu tekan 'Pakai posisi karakter'"
     end
     if err then
@@ -8370,9 +8400,9 @@ Auto.treeReadyAt = treeReadyAt
 Auto.plantSpotOk = plantSpotOk
 Auto.stopWalk = function() Move.Homing = false end
 Auto.here = function()
-    local s = playerState()
+    local s, why = readStateRef(Refs.State, true)
     if s then return startNode(s) end
-    return nil
+    return nil, why or "state karakter tidak tersedia"
 end
 Auto.startClear = startClear
 Auto.startFarmer = startFarmer
@@ -11304,7 +11334,7 @@ do (function()
             Callback = function()
                 local x, y = Auto.here()
                 if not x then
-                    notify("Lahan", "Kamu belum masuk world", 3)
+                    notify("Lahan", "Posisi karakter belum siap: " .. tostring(y), 4)
                     return
                 end
                 -- block yang dipijak = block pertama baris atas, kolom tangga kiri di sebelah kirinya
@@ -11329,7 +11359,7 @@ do (function()
             Callback = function()
                 local x, y = Auto.here()
                 if not x then
-                    notify("Lahan", "Kamu belum masuk world", 3)
+                    notify("Lahan", "Posisi karakter belum siap: " .. tostring(y), 4)
                     return
                 end
                 if Build.BreakX == x and Build.BreakY == y then
@@ -11559,7 +11589,7 @@ do (function()
             Callback = function()
                 local x, y = Auto.here()
                 if not x then
-                    notify("Vending", "Kamu belum masuk world", 3)
+                    notify("Vending", "Posisi karakter belum siap: " .. tostring(y), 4)
                     return
                 end
                 Vend.DropX, Vend.DropY = x, y
@@ -11729,7 +11759,7 @@ do (function()
             Callback = function()
                 local x, y = Auto.here()
                 if not x then
-                    notify("Pabrik", "Kamu belum masuk world", 3)
+                    notify("Pabrik", "Posisi karakter belum siap: " .. tostring(y), 4)
                     return
                 end
                 Pabrik.BreakX, Pabrik.BreakY = x, y
@@ -11820,7 +11850,7 @@ do (function()
             Callback = function()
                 local x, y = Auto.here()
                 if not x then
-                    notify("Pabrik", "Kamu belum masuk world", 3)
+                    notify("Pabrik", "Posisi karakter belum siap: " .. tostring(y), 4)
                     return
                 end
                 Pabrik.StorageX, Pabrik.StorageY = x, y
@@ -12242,7 +12272,7 @@ do (function()
             Callback = function()
                 local x, y = Auto.here()
                 if not x then
-                    notify("Titik Drop", "Kamu belum masuk world", 3)
+                    notify("Titik Drop", "Posisi karakter belum siap: " .. tostring(y), 4)
                     return
                 end
                 Pabrik.DropX, Pabrik.DropY = x, y
@@ -12334,7 +12364,7 @@ local function startRefRetry()
                 pcall(doInvRefresh, true)
             end
             pcall(function() UI.RefInfo:SetDesc(refsDetail()) end)
-            local coreReady = Refs.World and Refs.Inv and (Refs.State or Refs.ViewOk)
+            local coreReady = worldReady(Refs.World) and Refs.Inv and readStateRef(Refs.State, true) ~= nil
             if coreReady then break end
         end
         if alive() and token == refRetryToken then logRefDiagnostics() end
@@ -12395,7 +12425,9 @@ local function reconnect(show)
     if show then notify(show, refsText(), 5) end
     -- Retry otomatis hanya untuk reference inti. Reference opsional yang hilang
     -- tidak boleh memicu scan berulang dan membuat client tersendat.
-    if not (Refs.World and Refs.Inv and (Refs.State or Refs.ViewOk)) then startRefRetry() end
+    if not (worldReady(Refs.World) and Refs.Inv and readStateRef(Refs.State, true) ~= nil) then
+        startRefRetry()
+    end
 end
 
 table.insert(Connections, LocalPlayer.CharacterAdded:Connect(function()
