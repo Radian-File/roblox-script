@@ -1581,7 +1581,7 @@ local function findRefs(gcObjects)
         end
         if Refs.World and Refs.Inv and Refs.SetTile and Refs.State and Refs.Punch
             and Refs.Menu and Refs.Gems and Refs.Hud and Refs.Others then break end
-        if index % 300 == 0 then task.wait() end
+        if index % 100 == 0 then task.wait() end
     end
     return Refs.World ~= nil
 end
@@ -2065,6 +2065,7 @@ function Anim.findFast()
                 end
             end
         end
+        task.wait()
     end
     return false
 end
@@ -2111,6 +2112,7 @@ function Anim.quickRefs()
                     queue[#queue + 1] = u
                 end
             end
+            if n % 25 == 0 then task.wait() end
         end
     end
     return Refs.Inv ~= nil
@@ -2204,7 +2206,7 @@ local function findDropRefs(deep, gcObjects)
                     break
                 end
             end
-            if index % 300 == 0 then task.wait() end
+            if index % 100 == 0 then task.wait() end
         end
     end
     return Drops.list ~= nil
@@ -4740,7 +4742,7 @@ function Auto.findTreesDeep()
     end
     -- 2) handler remote world
     if getconnections then
-        for _, ev in ipairs(WorldRemotes:GetChildren()) do
+        for remoteIndex, ev in ipairs(WorldRemotes:GetChildren()) do
             if ev:IsA("RemoteEvent") then
                 local ok, conns = pcall(getconnections, ev.OnClientEvent)
                 if ok and type(conns) == "table" then
@@ -4750,6 +4752,7 @@ function Auto.findTreesDeep()
                     end
                 end
             end
+            if remoteIndex % 20 == 0 then task.wait() end
         end
         for _, name in ipairs({ "RenderStepped", "Heartbeat", "Stepped" }) do
             local okS, sig = pcall(function() return RunService[name] end)
@@ -4777,6 +4780,7 @@ function Auto.findTreesDeep()
                     addFn(u)
                 end
             end
+            if nF % 25 == 0 then task.wait() end
         end
     end
     return false
@@ -5052,7 +5056,8 @@ end
 
 local lastFarmerText = nil
 local function updateFarmerStatus()
-    if Refs.World and not Refs.Trees and os.clock() >= (Auto.nextTreeScan or 0) then
+    local needsTrees = Farmer.Running or Pabrik.Running or Build.Running
+    if needsTrees and Refs.World and not Refs.Trees and os.clock() >= (Auto.nextTreeScan or 0) then
         Auto.nextTreeScan = os.clock() + 15
         pcall(findTreeRefs)
     end
@@ -12134,23 +12139,34 @@ local function reconnect(show)
     if Clear.Running then stopClear("Dihentikan: hubungkan ulang ke game") end
     if Farmer.Running then stopFarmer("Dihentikan: hubungkan ulang ke game") end
     Auto.resetReach()
+    local inventoryRefreshed = false
+    local supportWorld = nil
     -- 1) cari isi tas cepat lalu langsung isi dropdown (tidak menunggu scan getgc yang lama)
     if pcall(Anim.quickRefs) and Refs.Inv then
         pcall(doInvRefresh, true)
+        inventoryRefreshed = true
+        supportWorld = Refs.World
         task.wait() -- biar dropdown tampil dulu sebelum scan lengkap (scan menahan layar sebentar)
     end
     -- 2) scan lengkap. getgc() sendiri tetap bergantung executor, tetapi snapshot
     -- hanya diambil sekali lalu pemrosesannya dipecah agar UI sempat menggambar.
     pcall(function() UI.RefInfo:SetDesc("Menghubungkan... memindai referensi game") end)
-    task.wait()
+    task.wait(0.25)
     local gcObjects, gcErr = Anim.gcObjects()
     if not gcObjects then warn("[Rocky] Scan referensi gagal: " .. tostring(gcErr)) end
     findRefs(gcObjects or false)
     watchInventory()
-    pcall(doInvRefresh, true) -- langsung di thread ini (thread INIT / antrian UI), bukan thread tombol
+    if not inventoryRefreshed then
+        pcall(doInvRefresh, true)
+    elseif UI.PabrikSupportRefresh and Refs.World ~= supportWorld then
+        -- World mungkin baru ditemukan oleh deep scan; cukup refresh kandidat support,
+        -- jangan bangun ulang semua dropdown inventory untuk kedua kalinya.
+        pcall(UI.PabrikSupportRefresh, true)
+    end
     findDropRefs(true, gcObjects or false)
     gcObjects = nil -- jangan tahan seluruh snapshot GC setelah reconnect selesai
-    Auto.findTreeRefs()
+    -- Tree refs dicari saat Farmer/Build/Pabrik benar-benar mulai. Fallback ini
+    -- dapat menelusuri banyak closure sehingga tidak layak berada di startup.
     table.clear(DropFailUntil)
     Anim.fn, Anim.idx = nil, nil
     pcall(Anim.findFast)
@@ -12447,6 +12463,7 @@ do
 end
 
 task.spawn(function()
+    task.wait(0.75) -- beri WindUI waktu render stabil sebelum scan executor
     reconnect("Rocky v5.2")
     -- Penjaga dari config dinyalakan setelah data pemain ketemu
     -- (supaya pemain yang sudah ada dicatat dulu)
