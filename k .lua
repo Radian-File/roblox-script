@@ -6,6 +6,8 @@ for _, key in ipairs({ "__KzoyzOpus", "__GTFarm" }) do -- __GTFarm = nama versi 
 end
 local Session = {}
 G.__KzoyzOpus = Session
+local BUILD_ID = "2026-11-08-state-metatable-1"
+print("[Rocky] Build " .. BUILD_ID)
 local function alive()
     return G.__KzoyzOpus == Session
 end
@@ -386,7 +388,7 @@ local Refs = {
     ViewOk = false,
     DeepTried = {},
     FullScan = false,
-    StateProbe = { holders = 0, lastWhy = nil },
+    StateProbe = { holders = 0, direct = 0, metatable = 0, lastWhy = nil },
 }
 
 -- Daftar drop di world (diambil dari game)
@@ -1463,10 +1465,7 @@ function Anim.bind(fn)
     return false
 end
 
-local function readStateRef(fn, activeOnly)
-    if type(fn) ~= "function" then return nil, "state bukan function" end
-    local ok, s = pcall(fn)
-    if not ok then return nil, "state() error: " .. tostring(s) end
+local function validateStateValue(s, activeOnly)
     if type(s) ~= "table" or type(s.x) ~= "number" or type(s.y) ~= "number" then
         return nil, "state() tidak memberi koordinat x/y"
     end
@@ -1475,6 +1474,13 @@ local function readStateRef(fn, activeOnly)
     -- tetap membaca field tersebut dari state yang dikembalikan game.
     if activeOnly and s.active == false then return nil, "state karakter inactive" end
     return s
+end
+
+local function readStateRef(fn, activeOnly)
+    if type(fn) ~= "function" then return nil, "state bukan function" end
+    local ok, s = pcall(fn)
+    if not ok then return nil, "state() error: " .. tostring(s) end
+    return validateStateValue(s, activeOnly)
 end
 
 local function stateCapabilities(s)
@@ -1486,17 +1492,59 @@ local function stateCapabilities(s)
     return table.concat(out, ", ")
 end
 
+local function findStateMethod(v)
+    if type(v) ~= "table" then return nil end
+    local direct = rawget(v, "state")
+    if type(direct) == "function" then return direct, "direct" end
+    local ok, mt = pcall(getmetatable, v)
+    if (not ok or type(mt) ~= "table") and type(getrawmetatable) == "function" then
+        ok, mt = pcall(getrawmetatable, v)
+    end
+    if not ok or type(mt) ~= "table" then return nil end
+    local method = rawget(mt, "state")
+    if type(method) == "function" then return method, "metatable" end
+    local index = rawget(mt, "__index")
+    method = type(index) == "table" and rawget(index, "state") or nil
+    if type(method) == "function" then return method, "metatable.__index" end
+    return nil
+end
+
+local function bindStateMethod(fn, owner)
+    local ok, value = pcall(fn)
+    if ok then
+        local state, why = validateStateValue(value, true)
+        if state then return fn, nil end
+        value = why
+    else
+        value = "state() error tanpa self: " .. tostring(value)
+    end
+    local okSelf, withSelf = pcall(fn, owner)
+    if okSelf then
+        local state, why = validateStateValue(withSelf, true)
+        if state then
+            return function() return fn(owner) end, nil
+        end
+        return nil, why
+    end
+    return nil, tostring(value) .. "; dengan self: " .. tostring(withSelf)
+end
+
 local function stateFunctionFrom(v)
-    local fn = type(v) == "table" and rawget(v, "state") or nil
+    local fn, kind = findStateMethod(v)
     if type(fn) ~= "function" then return nil end
     local probe = Refs.StateProbe
     probe.holders = (probe.holders or 0) + 1
-    local state, why = readStateRef(fn, true)
-    if not state then
+    if kind == "direct" then
+        probe.direct = (probe.direct or 0) + 1
+    else
+        probe.metatable = (probe.metatable or 0) + 1
+    end
+    local bound, why = bindStateMethod(fn, v)
+    if not bound then
         probe.lastWhy = why
         return nil
     end
-    return fn
+    return bound, kind
 end
 
 -- Fingerprint world aktif yang dipakai versi awal: grid, ukuran, dan spawn.
@@ -1591,8 +1639,8 @@ local function acceptRefTable(v, source, coreOnly)
         if ok and valid then setRef("Inv", v, source) end
     end
     if not Refs.State then
-        local stateFn = stateFunctionFrom(v)
-        if stateFn then setRef("State", stateFn, source) end
+        local stateFn, stateKind = stateFunctionFrom(v)
+        if stateFn then setRef("State", stateFn, source .. " " .. tostring(stateKind)) end
     end
     if coreOnly then return end
     if not Refs.Menu and type(rawget(v, "openBackpack")) == "function"
@@ -1703,10 +1751,11 @@ local function findRefs(gcObjects, wants)
     if Refs.State then
         Refs.Why.State = nil
     elseif (Refs.StateProbe.holders or 0) > 0 then
-        Refs.Why.State = ("%d holder state() ditemukan; terakhir ditolak: %s")
-            :format(Refs.StateProbe.holders, tostring(Refs.StateProbe.lastWhy or "hasil tidak valid"))
+        Refs.Why.State = ("%d holder state() ditemukan (direct %d, metatable %d); terakhir ditolak: %s")
+            :format(Refs.StateProbe.holders, Refs.StateProbe.direct or 0, Refs.StateProbe.metatable or 0,
+                tostring(Refs.StateProbe.lastWhy or "hasil tidak valid"))
     else
-        Refs.Why.State = "tidak ada table dengan fungsi state() pada quick/full scan"
+        Refs.Why.State = "tidak ada method state() direct/metatable pada quick/full scan"
     end
     Refs.Why.SetTile = Refs.SetTile and nil or (getconsts and "signature tile/placedAt/flips tidak ditemukan" or "getconstants tidak tersedia")
     Refs.Why.Punch = Refs.Punch and nil or (getconsts and "signature newCrack/HarvestProvider tidak ditemukan" or "getconstants tidak tersedia")
@@ -12562,7 +12611,7 @@ local function reconnect(show, full)
     Refs.ViewOk, Refs.TreeTried = false, false
     Refs.DeepTried = {}
     Refs.FullScan = false
-    Refs.StateProbe = { holders = 0, lastWhy = nil }
+    Refs.StateProbe = { holders = 0, direct = 0, metatable = 0, lastWhy = nil }
     Drops.list, Drops.update = nil, nil
     for _, name in ipairs({ "World", "State", "Others", "Trees", "Drop" }) do
         Refs.Source[name], Refs.Why[name] = nil, nil
