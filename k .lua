@@ -5584,14 +5584,8 @@ end
 local BOOT_SEEDS = 10 -- (mode produksi) cukup seed segini untuk mulai tanam
 local CAP = 190       -- batas aman jumlah item (maksimal 200 per item)
 
--- Jangan pakai CAP bersama pada UI/flow Pabrik: pada executor tertentu nilai itu
--- pernah terbaca nil di closure UI. Field ini selalu memiliki fallback eksplisit.
-local function pabrikInventoryCap()
-    return math.max(1, math.floor(tonumber(Pabrik.InventoryCap) or 190))
-end
-
 local function pabrikInventoryPolicy()
-    local cap = pabrikInventoryCap()
+    local cap = math.max(1, math.floor(tonumber(Pabrik.InventoryCap) or 190))
     local storeAt = math.clamp(math.floor(tonumber(Pabrik.BlockStoreAt) or 170), 1, cap)
     local keep = math.clamp(math.floor(tonumber(Pabrik.BlockKeep) or 30), 0, storeAt - 1)
     local refillAt = math.clamp(math.floor(tonumber(Pabrik.RefillAt) or 10), 0, cap - 1)
@@ -5689,7 +5683,7 @@ local function pabrikBreak(o)
     local acts0 = State.Placed + State.Broken
     local lastActs, lastActAt = acts0, os.clock()
     local startedAt = os.clock()
-    local cap = pabrikInventoryCap()
+    local cap = math.max(1, math.floor(tonumber(Pabrik.InventoryCap) or 190))
     task.spawn(function() -- pengawas sesi break
         while State.Running and State.RunId == id do
             task.wait(1)
@@ -6057,7 +6051,7 @@ end
 local function pabrikStep(o)
     local seeds, blocks = invCount(o.seed), invCount(o.block)
     local policy = pabrikInventoryPolicy()
-    local cap = pabrikInventoryCap()
+    local cap = math.max(1, math.floor(tonumber(Pabrik.InventoryCap) or 190))
     if not o.phase then pabrikSetPhase(o, "validate", "mulai sesi") end
 
     local function pause(reason)
@@ -6232,7 +6226,8 @@ local function pabrikLoop(runId)
                     Reach = nil
                 end
             end
-            if seeds >= pabrikInventoryCap() - 20 and not (Pabrik.Drop and Pabrik.pointSet()) then
+            if seeds >= math.max(1, math.floor(tonumber(Pabrik.InventoryCap) or 190)) - 20
+                and not (Pabrik.Drop and Pabrik.pointSet()) then
                 Pabrik.Status = ("Seed hampir penuh (%d): atur titik drop & nyalakan Auto drop seed"):format(seeds)
             elseif (nReady or 0) > 0 then
                 Pabrik.Status = nReady .. " pohon siap belum terjangkau, dicoba lagi"
@@ -11218,7 +11213,7 @@ do (function()
     local pDrop = box(PTab, "Drop seed", true)
     local pInventory = box(PTab, "Inventory block", true)
     local pStorage = box(PTab, "Block Storage", true)
-    local pabrikCap = pabrikInventoryCap()
+    local pabrikCap = math.max(1, math.floor(tonumber(Pabrik.InventoryCap) or 190))
 
     safe(function()
         UI.PabrikToggle = pCtl:Toggle({

@@ -269,6 +269,6 @@ Rencana detail dan urutan pengerjaan berada di `docs/implementation-plans.md`. S
 ## 16. Perbaikan batas inventory Pabrik (8 November 2026)
 
 - Runtime melaporkan `attempt to perform arithmetic (sub) on nil and number` pada kontrol Inventory Pabrik yang menghitung `CAP - 1`. Error tersebut menghentikan konstruksi UI sebelum tab Koneksi dibuat.
-- Batas aman Pabrik kini dimiliki oleh `Pabrik.InventoryCap` dengan fallback `190`; slider Pabrik dan seluruh pemeriksaan kapasitas seed Pabrik memakai nilai ini, bukan `CAP` bersama.
+- Batas aman Pabrik kini dimiliki oleh `Pabrik.InventoryCap` dengan fallback `190`; slider Pabrik dan seluruh pemeriksaan kapasitas seed Pabrik menghitung nilai ini langsung, bukan lewat `CAP` atau helper lokal lintas-scope.
 - `InventoryCap` bukan pengaturan pengguna dan tidak dipersistenkan. Pemakaian `CAP` oleh Build tidak diubah dalam patch ini.
 - Patch hanya diperiksa secara statis; buka UI Pabrik lalu tab Koneksi pada runtime terotorisasi untuk verifikasi.
