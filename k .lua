@@ -6,7 +6,7 @@ for _, key in ipairs({ "__KzoyzOpus", "__GTFarm" }) do -- __GTFarm = nama versi 
 end
 local Session = {}
 G.__KzoyzOpus = Session
-print("[Rocky] Build 2026-11-08-state-metatable-2")
+print("[Rocky] Build 2026-11-08-refs-transaction-1")
 local function alive()
     return G.__KzoyzOpus == Session
 end
@@ -1511,17 +1511,20 @@ end
 function Anim.bindStateMethod(fn, owner)
     local ok, value = pcall(fn)
     if ok then
-        local state, why = Anim.validateStateValue(value, true)
-        if state then return fn, nil end
+        -- Discovery hanya membuktikan kontrak koordinat. Holder yang masih
+        -- inactive tetap disimpan agar dapat berubah menjadi aktif tanpa
+        -- membutuhkan snapshot getgc kedua.
+        local state, why = Anim.validateStateValue(value, false)
+        if state then return fn, nil, state.active ~= false end
         value = why
     else
         value = "state() error tanpa self: " .. tostring(value)
     end
     local okSelf, withSelf = pcall(fn, owner)
     if okSelf then
-        local state, why = Anim.validateStateValue(withSelf, true)
+        local state, why = Anim.validateStateValue(withSelf, false)
         if state then
-            return function() return fn(owner) end, nil
+            return function() return fn(owner) end, nil, state.active ~= false
         end
         return nil, why
     end
@@ -1538,12 +1541,12 @@ function Anim.stateFunctionFrom(v)
     else
         probe.metatable = (probe.metatable or 0) + 1
     end
-    local bound, why = Anim.bindStateMethod(fn, v)
+    local bound, why, active = Anim.bindStateMethod(fn, v)
     if not bound then
         probe.lastWhy = why
         return nil
     end
-    return bound, kind
+    return bound, kind, active
 end
 
 -- Fingerprint world aktif yang dipakai versi awal: grid, ukuran, dan spawn.
@@ -1564,9 +1567,13 @@ end
 
 local function isOthersRef(v)
     if type(v) ~= "table" then return false end
-    local list = rawget(v, "list")
-    if type(list) ~= "function" then return false end
-    if type(rawget(v, "where")) ~= "function" and type(rawget(v, "playerAt")) ~= "function" then
+    -- Versi game terbaru dapat mengekspos API Players melalui metatable atau
+    -- __index. Baca property tanpa memanggil list()/where()/playerAt().
+    local ok, list, where, playerAt = pcall(function()
+        return v.list, v.where, v.playerAt
+    end)
+    if not ok or type(list) ~= "function" then return false end
+    if type(where) ~= "function" and type(playerAt) ~= "function" then
         return false
     end
     -- Jangan panggil API pemain milik game selama discovery. Pada beberapa versi
@@ -1637,9 +1644,12 @@ local function acceptRefTable(v, source, coreOnly)
         local ok, valid = pcall(Anim.isInventoryRef, v)
         if ok and valid then setRef("Inv", v, source) end
     end
-    if not Refs.State then
-        local stateFn, stateKind = Anim.stateFunctionFrom(v)
-        if stateFn then setRef("State", stateFn, source .. " " .. tostring(stateKind)) end
+    if not Refs.State or Refs.StatePending then
+        local stateFn, stateKind, stateActive = Anim.stateFunctionFrom(v)
+        if stateFn and (not Refs.State or stateActive) then
+            setRef("State", stateFn, source .. " " .. tostring(stateKind))
+            Refs.StatePending = not stateActive
+        end
     end
     if coreOnly then return end
     if not Refs.Menu and type(rawget(v, "openBackpack")) == "function"
@@ -1692,6 +1702,7 @@ local function findRefs(gcObjects, wants)
         return Refs.World ~= nil, scanErr or "Snapshot getgc tidak tersedia"
     end
     Refs.World, Refs.SetTile, Refs.State, Refs.Punch, Refs.Menu = previous.World, nil, previous.State, nil, nil
+    Refs.StatePending = Refs.State and readStateRef(Refs.State, true) == nil or false
     Refs.Inv = previous.Inv
     Refs.Gems = nil
     Refs.Hud = nil
@@ -1731,7 +1742,7 @@ local function findRefs(gcObjects, wants)
         elseif tv == "function" and (not Refs.SetTile or not Refs.Punch) then
             acceptRefFunction(v, "getgc")
         end
-        if Refs.World and Refs.Inv and Refs.State and (Refs.SetTile or setFallback)
+        if Refs.World and Refs.Inv and Refs.State and not Refs.StatePending and (Refs.SetTile or setFallback)
             and (Refs.Punch or punchFallback) and (not wants.drops or Drops.list)
             and (not wants.others or Refs.Others) then break end
         if index % 100 == 0 then task.wait() end
@@ -1786,7 +1797,8 @@ local function refsText()
     local stateOk = readStateRef(Refs.State, true) ~= nil
     local worldStatus = worldOk and "OK" or (Refs.World and "TUNGGU" or "TIDAK")
     local setStatus = Refs.SetTile and "OK" or (setFallback and "FALLBACK" or "TIDAK")
-    local posStatus = stateOk and "OK" or (Refs.State and "TUNGGU" or (Refs.ViewOk and "VIEW" or "TIDAK"))
+    local posStatus = stateOk and "OK" or (Refs.State and "TUNGGU"
+        or (Refs.ViewOk and "VIEW" or (Refs.FullScan and "TIDAK" or "TUNDA")))
     local punchStatus = Refs.Punch and "OK" or (punchFallback and "FALLBACK" or "TIDAK")
     local dropStatus = Drops.list and "OK" or (Refs.DeepTried.Drop and "TIDAK" or "TUNDA")
     local treeStatus = Refs.Trees and "OK" or (Refs.TreeTried and "TIDAK" or "TUNDA")
@@ -2413,9 +2425,10 @@ function Anim.quickRefs(full, maxFunctions)
     local queue, seen, n = {}, {}, 0
     local function ready()
         if full then
-            return Refs.Inv and Refs.World and Refs.State and Refs.SetTile and Refs.Punch and Refs.Others
+            return Refs.Inv and Refs.World and Refs.State and not Refs.StatePending
+                and Refs.SetTile and Refs.Punch and Refs.Others
         end
-        return Refs.Inv and Refs.World and Refs.State
+        return Refs.Inv and Refs.World and Refs.State and not Refs.StatePending
     end
     for _, name in ipairs({ "RenderStepped", "Heartbeat", "Stepped" }) do
         local okS, sig = pcall(function() return RunService[name] end)
@@ -12685,9 +12698,23 @@ local function reconnect(show, full)
     if Clear.Running then stopClear("Dihentikan: hubungkan ulang ke game") end
     if Farmer.Running then stopFarmer("Dihentikan: hubungkan ulang ke game") end
     Auto.resetReach()
+    if full then
+        if not waitConnectionSurface(8) then
+            warn("[Rocky] Surface karakter belum lengkap; full scan tetap dicoba")
+        else
+            -- PlayerView dapat muncul satu frame sebelum holder state game aktif.
+            task.wait(0.35)
+        end
+    end
+    local keptState = full and readStateRef(Refs.State, true) and Refs.State or nil
+    local keptOthers = full and isOthersRef(Refs.Others) and Refs.Others or nil
+    local keptStateSource = keptState and Refs.Source.State or nil
+    local keptOthersSource = keptOthers and Refs.Source.Others or nil
     -- World/State/Others terikat pada sesi world aktif. Jangan biarkan reference
-    -- lama membuat quick scan berhenti sebelum membaca sesi yang sekarang.
-    Refs.World, Refs.State, Refs.Others = nil, nil, nil
+    -- invalid membuat quick scan berhenti. Reference yang masih operasional
+    -- dipertahankan secara transaksional selama reconnect manual.
+    Refs.World, Refs.State, Refs.Others = nil, keptState, keptOthers
+    Refs.StatePending = false
     Refs.Trees, Refs.TreeMode, Refs.TreeP = nil, nil, nil
     Refs.ViewOk, Refs.TreeTried = false, false
     Refs.DeepTried = {}
@@ -12697,6 +12724,8 @@ local function reconnect(show, full)
     for _, name in ipairs({ "World", "State", "Others", "Trees", "Drop" }) do
         Refs.Source[name], Refs.Why[name] = nil, nil
     end
+    if keptState then Refs.Source.State = keptStateSource or "preserved before reconnect" end
+    if keptOthers then Refs.Source.Others = keptOthersSource or "preserved before reconnect" end
     local inventoryRefreshed = false
     local supportWorld = nil
     -- 1) cari isi tas cepat lalu langsung isi dropdown (tidak menunggu scan getgc yang lama)
@@ -12752,6 +12781,8 @@ end
 
 table.insert(Connections, LocalPlayer.CharacterAdded:Connect(function()
     Refs.State, Refs.ViewOk = nil, false
+    Refs.StatePending = false
+    Refs.FullScan = false
     Refs.Why.State = "menunggu state karakter setelah respawn"
     startRefRetry()
 end))
