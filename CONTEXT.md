@@ -279,3 +279,10 @@ Rencana detail dan urutan pengerjaan berada di `docs/implementation-plans.md`. S
 - **Dilaporkan pengguna, belum terverifikasi sebagai transisi gagal:** setelah BREAK tampak selesai, Pabrik tidak terlihat memasuki PLANT. Source menyatakan BREAK yang sukses memanggil transisi ke PLANT; karena updater status sudah mati, tampilan fase tidak dapat dipakai sebagai bukti state internal.
 - Kemungkinan yang perlu dibedakan setelah observability pulih: BREAK sebenarnya gagal/PAUSED; seed hasil BREAK tidak tersedia sehingga PLANT langsung menuju WAIT_GROWTH; atau tidak ada tile tanam valid (area, Whole World, atau Support Block Filter).
 - **Arah desain yang dicatat:** `Finalisasi BREAK` adalah kondisi antara BREAK dan PLANT. BREAK hanya boleh lanjut apabila inventory block target nol dan drop block target pada area kerja sudah diperiksa/ditangani dengan retry terbatas. Drop tersisa yang tidak dapat dijangkau harus menghasilkan PAUSED/RECOVERY, bukan langsung PLANT.
+
+## 18. Perbaikan observability dan finalisasi BREAK (8 November 2026)
+
+- Updater `Status Pabrik` tidak lagi memanggil helper Pabrik lokal yang pada runtime pengguna terbaca `nil`. Nilai inventory dan nama storage untuk tampilan dihitung langsung dari tabel `Pabrik`; perbaikan ini ditujukan khusus error `k .lua:11418` dan belum terverifikasi runtime.
+- **BREAK selesai** kini berarti: inventory Item ID block target kosong, data `Drops.list` tersedia, dan tidak ada lagi drop block target pada snapshot Grid BREAK. Jika drop masih ada, Pabrik mencoba mengambil hanya drop Item ID tersebut di area grid dengan maksimal dua percobaan.
+- Jika pungutan memulihkan inventory, Pabrik melanjutkan BREAK lebih dulu (tanpa langsung dialihkan oleh ambang refill pada satu langkah tersebut). Jika target drop tetap ada atau data drop tidak tersedia, fase menjadi `PAUSED`; PLANT tidak dipakai sebagai fallback.
+- BREAK yang berhenti karena timeout tetapi masih memiliki block tidak dianggap selesai: ia tetap pada BREAK. Semua perilaku ini hanya diperiksa statis; posisi drop, pembaruan `Drops.list`, dan pickup server harus diuji pada lingkungan terotorisasi.

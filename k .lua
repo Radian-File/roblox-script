@@ -5659,6 +5659,23 @@ local function pabrikCfg(o, harvest, plant)
 end
 
 -- Break block di posisi pabrik (pakai Auto Farm dengan tile & block pabrik)
+-- Snapshot area kerja BREAK setelah karakter sampai di posisi Pabrik. Snapshot ini
+-- dipakai finalisasi batch agar hanya drop dari grid Pabrik yang boleh menentukan
+-- apakah fase boleh lanjut ke PLANT.
+local function pabrikBreakTiles()
+    local px, py = getPlayerTile()
+    if not px or not py then return nil end
+    local tiles = {}
+    for key in pairs(Pabrik.Tiles) do
+        local dx, dy = string.match(key, "^(-?%d+),(-?%d+)$")
+        dx, dy = tonumber(dx), tonumber(dy)
+        if dx and dy then
+            tiles[#tiles + 1] = { x = px + dx, y = py + dy }
+        end
+    end
+    return #tiles > 0 and tiles or nil
+end
+
 local function pabrikBreak(o)
     if os.clock() < (Pabrik.BreakFailUntil or 0) then return false, "cooldown break masih aktif" end
     local s = playerState()
@@ -5673,6 +5690,8 @@ local function pabrikBreak(o)
         end
     end
     if not o.live() then return false, "sesi Pabrik tidak lagi aktif" end
+    local breakTiles = pabrikBreakTiles()
+    if not breakTiles then return false, "tile break tidak dapat dipetakan" end
     State.Override = { offsets = Pabrik.Tiles, block = o.block, mode = "Place + Break" }
     State.Quiet = true
     table.clear(HitCount)
@@ -5711,7 +5730,7 @@ local function pabrikBreak(o)
         Pabrik.Status = "Sesi break tanpa aksi: cek posisi & tile break (dicoba lagi 1 menit)"
         return false, "sesi break tanpa aksi"
     end
-    return true, "batch break selesai"
+    return true, "batch break selesai", breakTiles
 end
 
 -- "WORLD" / "WORLD:ID" / ":ID" -> nama world, id pintu
@@ -6042,6 +6061,77 @@ local function pabrikSetPhase(o, nextPhase, reason)
     pabrikEvent(o, "phase", Pabrik.LastTransition)
 end
 
+local function pabrikDropInBreakArea(d, tiles)
+    if type(d) ~= "table" or type(d.x) ~= "number" or type(d.y) ~= "number" then return false end
+    for _, tile in ipairs(tiles) do
+        if inTile(tile, d.x, d.y) then return true end
+    end
+    return false
+end
+
+local function pabrikDropsInBreakArea(block, tiles)
+    local list = Drops.list
+    if type(list) ~= "table" then return nil end
+    local count = 0
+    for _, d in ipairs(list) do
+        if d.id == block and pabrikDropInBreakArea(d, tiles) then count += 1 end
+    end
+    return count
+end
+
+-- BREAK tidak selesai hanya karena farmLoop berhenti. Saat block di inventori
+-- habis, tunggu drop dari grid yang baru dipecah, ambil hanya ItemId block
+-- target, lalu BREAK lagi jika stock kembali. Drop tersisa yang gagal diambil
+-- menjadi PAUSED agar tidak dilompati sebagai PLANT.
+local function pabrikFinalizeBreak(o, tiles)
+    local blocks = invCount(o.block)
+    if blocks > 0 then
+        return "resume", ("batch berhenti dengan %d block tersisa; lanjut BREAK"):format(blocks)
+    end
+    if type(tiles) ~= "table" or #tiles == 0 then
+        return "pause", "area BREAK tidak tersedia untuk memeriksa drop"
+    end
+    if type(Drops.list) ~= "table" then
+        return "pause", "data drop tidak tersedia; BREAK belum dapat dikonfirmasi selesai"
+    end
+
+    Pabrik.Status = "Finalisasi BREAK: menunggu drop block target"
+    Drops.waitSpawn(tiles)
+    for pass = 1, 2 do
+        local remaining = pabrikDropsInBreakArea(o.block, tiles)
+        if remaining == nil then
+            return "pause", "data drop hilang saat finalisasi BREAK"
+        end
+        if remaining <= 0 then
+            pabrikEvent(o, "break_complete", "block dan drop target pada grid sudah habis")
+            return "plant", "block dan drop target sudah habis"
+        end
+
+        Pabrik.Status = ("Finalisasi BREAK: %d drop block target, ambil %d/2")
+            :format(remaining, pass)
+        local called, result = pcall(Move.fetchDrops, o.live, 8, function(d)
+            return d.id == o.block and pabrikDropInBreakArea(d, tiles)
+        end, 10)
+        if not called then
+            return "pause", "error collect drop BREAK: " .. tostring(result)
+        end
+        if not o.live() then return "pause", "sesi Pabrik dihentikan saat finalisasi BREAK" end
+        task.wait(0.25)
+        if invCount(o.block) > 0 then
+            o.breakDropResume = true -- drop grid harus dipakai dulu, sebelum threshold refill
+            return "resume", "block hasil BREAK terkumpul; lanjut BREAK"
+        end
+    end
+
+    local remaining = pabrikDropsInBreakArea(o.block, tiles)
+    if remaining and remaining > 0 then
+        return "pause", ("%d drop block target pada grid BREAK tidak dapat diambil"):format(remaining)
+    end
+    if remaining == nil then return "pause", "data drop hilang saat finalisasi BREAK" end
+    pabrikEvent(o, "break_complete", "block dan drop target pada grid sudah habis")
+    return "plant", "block dan drop target sudah habis"
+end
+
 local function breakReady()
     return Pabrik.BreakX >= 0 and next(Pabrik.Tiles) ~= nil and os.clock() >= (Pabrik.BreakFailUntil or 0)
 end
@@ -6099,16 +6189,25 @@ local function pabrikStep(o)
     end
 
     if o.phase == "break" then
-        if blocks <= policy.refillAt then
+        local resumedFromDrop = o.breakDropResume == true
+        o.breakDropResume = nil
+        if blocks <= policy.refillAt and not resumedFromDrop then
             o.resumePhase, Pabrik.ResumePhase = "break", "break"
             pabrikSetPhase(o, "refill_block", ("block %d mencapai ambang refill %d")
                 :format(blocks, policy.refillAt))
             return "next"
         end
         if not breakReady() then return pause("posisi atau grid break belum valid") end
-        local ok, why = pabrikBreak(o)
+        local ok, why, breakTiles = pabrikBreak(o)
         if not ok then return pause(why or "batch break gagal") end
-        pabrikSetPhase(o, "plant", why or "batch break selesai")
+        local outcome, finalWhy = pabrikFinalizeBreak(o, breakTiles)
+        if outcome == "resume" then
+            Pabrik.Status = finalWhy
+            pabrikEvent(o, "break_resume", finalWhy)
+            return "next"
+        end
+        if outcome == "pause" then return pause(finalWhy or "finalisasi BREAK gagal") end
+        pabrikSetPhase(o, "plant", finalWhy or why or "batch break selesai")
         return "next"
     end
 
@@ -11415,14 +11514,31 @@ do (function()
             local support = Pabrik.SupportFilter
                 and (Pabrik.SupportId and itemName(Pabrik.SupportId) or "belum dipilih")
                 or "semua block valid"
-            local policy = pabrikInventoryPolicy()
+            -- Updater UI ini tidak memanggil helper Pabrik lokal. Pada executor
+            -- pengguna, helper tersebut terbaca nil di closure task UI dan
+            -- membuat seluruh status berhenti pada "-".
+            local uiCap = math.max(1, math.floor(tonumber(Pabrik.InventoryCap) or 190))
+            local storeAt = math.clamp(math.floor(tonumber(Pabrik.BlockStoreAt) or 170), 1, uiCap)
+            local refillAt = math.clamp(math.floor(tonumber(Pabrik.RefillAt) or 10), 0, uiCap - 1)
+            local policy = {
+                storeAt = storeAt,
+                keep = math.clamp(math.floor(tonumber(Pabrik.BlockKeep) or 30), 0, storeAt - 1),
+                refillAt = refillAt,
+                refillTarget = math.clamp(math.floor(tonumber(Pabrik.RefillTarget) or 150), refillAt + 1, uiCap),
+            }
             local trees = Pabrik.TreeSummary
             local treeText = trees and ("siap %d | tumbuh %d | unknown %d | unreachable %d")
                 :format(trees.ready or 0, trees.growing or 0, trees.unknown or 0,
                     math.max(trees.unreachable or 0, Pabrik.UnreachableCount or 0))
                 or "belum dipindai"
-            local storageName, storageDoor = parseStorageTarget()
-            local storageText = Pabrik.storagePointSet()
+            local storageRaw = tostring(Pabrik.StorageWorld or ""):gsub("%s", "")
+            local storageName, storageDoor = string.match(storageRaw, "^([^:]*):(.+)$")
+            if not storageName then storageName = storageRaw end
+            storageName = string.upper(storageName):gsub("[^A-Z0-9]", "")
+            if storageDoor == "" then storageDoor = nil end
+            local storageSet = type(Pabrik.StorageX) == "number" and type(Pabrik.StorageY) == "number"
+                and Pabrik.StorageX >= 0 and Pabrik.StorageY >= 0
+            local storageText = storageSet
                 and ((storageName ~= "" and storageName or "world Pabrik")
                     .. (storageDoor and (":" .. storageDoor) or "")
                     .. (" (%d,%d)"):format(Pabrik.StorageX, Pabrik.StorageY))
