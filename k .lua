@@ -208,6 +208,7 @@ local Pabrik = {
     Harvested = 0,
     Planted = 0,
     Dropped = 0,
+    StoredBlocks = 0,
     Skip = {},
     Status = "-",
     Traveling = false,
@@ -5791,6 +5792,72 @@ local function dropTrip(items, live, say)
 end
 Auto.dropTrip = dropTrip
 
+-- Perjalanan storage khusus block. Aksi callback dijalankan hanya setelah titik
+-- storage dicapai; home dikembalikan sebelum fase utama dilanjutkan.
+local function storageTrip(o, action)
+    if not Pabrik.storagePointSet() then return false, "Block Storage belum diatur" end
+    local home = Guard.worldName()
+    local name, door = parseStorageTarget()
+    if name == "" then name = home end
+    if name == "" then return false, "world Pabrik tidak diketahui" end
+    local away = name ~= home
+    local ok, why = true, nil
+    Pabrik.Traveling = true
+    if away or door then
+        Pabrik.Status = "Pergi ke Block Storage " .. name .. (door and (":" .. door) or "")
+        local entered, err = goWorld(name, door)
+        if not entered then ok, why = false, "gagal masuk world storage: " .. tostring(err) end
+    end
+    if ok and o.live() then
+        Pabrik.Status = ("Jalan ke Block Storage (%d,%d)"):format(Pabrik.StorageX, Pabrik.StorageY)
+        if not walkTo(Pabrik.StorageX, Pabrik.StorageY, 60) then
+            ok, why = false, "tidak bisa jalan ke Block Storage"
+        end
+    end
+    if ok and o.live() then
+        local s = playerState()
+        if s then
+            Pabrik.BlockStorageZone = { world = Guard.worldName(), x = s.x, y = s.y - 0.475 }
+        end
+        ok, why = action()
+    elseif ok then
+        ok, why = false, "sesi Pabrik dibatalkan saat menuju storage"
+    end
+    if away and home ~= "" and o.live() then
+        Pabrik.Status = "Pulang ke world Pabrik " .. home
+        local returned = goWorld(home, nil)
+        if not returned and o.live() then
+            task.wait(5)
+            returned = goWorld(home, nil)
+        end
+        if not returned then ok, why = false, "gagal pulang ke world Pabrik" end
+    end
+    Pabrik.Traveling = false
+    autoEnd()
+    return ok, why
+end
+
+local function pabrikStoreBlocks(o)
+    local policy = pabrikInventoryPolicy()
+    local before = invCount(o.block)
+    local want = before - policy.keep
+    if want <= 0 then return true, "block sudah sesuai jumlah simpan" end
+    local got = 0
+    local ok, why = storageTrip(o, function()
+        Pabrik.Status = ("Simpan %s x%d"):format(itemName(o.block), want)
+        local n, err = dropItems(o.block, want, o.live)
+        got = n
+        if n <= 0 then return false, err or "block tidak berhasil disimpan" end
+        if n < want then return false, ("hanya %d/%d block tersimpan"):format(n, want) end
+        return true, "block tersimpan"
+    end)
+    local after = invCount(o.block)
+    local changed = math.max(0, before - after)
+    if ok and changed <= 0 then return false, "inventory block tidak berubah setelah store" end
+    if changed > 0 then Pabrik.StoredBlocks += changed end
+    return ok, why
+end
+
 -- Titik drop sudah diatur? (posisi, WORLD:ID, atau world lain)
 function Pabrik.pointSet()
     if Pabrik.DropX >= 0 then return true end
@@ -5914,6 +5981,15 @@ local function pabrikStep(o)
 
     if o.phase == "paused" then return "paused" end
 
+    if o.phase == "store_block" then
+        local resume = o.resumePhase or Pabrik.ResumePhase or "harvest"
+        local ok, why = pabrikStoreBlocks(o)
+        if not ok then return pause(why or "Auto Store Blocks gagal") end
+        o.resumePhase, Pabrik.ResumePhase = nil, nil
+        pabrikSetPhase(o, resume, why or "Auto Store Blocks selesai")
+        return "next"
+    end
+
     if o.phase == "break" then
         if blocks <= 0 then
             pabrikSetPhase(o, "plant", "stok block break habis")
@@ -5964,8 +6040,10 @@ local function pabrikStep(o)
 
     if o.phase == "harvest" then
         if blocks >= policy.storeAt then
-            return pause(("block %d mencapai ambang simpan %d; Block Storage belum dikonfigurasi")
+            o.resumePhase, Pabrik.ResumePhase = "harvest", "harvest"
+            pabrikSetPhase(o, "store_block", ("block %d mencapai ambang simpan %d")
                 :format(blocks, policy.storeAt))
+            return "next"
         end
         if seeds >= CAP and not (Pabrik.Drop and Pabrik.pointSet()) then
             return pause(("seed %d mencapai batas aman tanpa titik drop aktif"):format(seeds))
@@ -11232,7 +11310,8 @@ do (function()
                     :format(policy.storeAt, policy.keep, policy.refillAt, policy.refillTarget),
                 "Storage: " .. storageText,
                 ("Drop   : %s | sisakan %d, drop saat >= %d"):format(Pabrik.Drop and dropAt or "mati", Pabrik.Keep, Pabrik.DropAt),
-                ("Hasil  : panen %d | tanam %d | di-drop %d"):format(Pabrik.Harvested, Pabrik.Planted, Pabrik.Dropped),
+                ("Hasil  : panen %d | tanam %d | seed drop %d | block simpan %d")
+                    :format(Pabrik.Harvested, Pabrik.Planted, Pabrik.Dropped, Pabrik.StoredBlocks),
                 "Aksi   : " .. Pabrik.Status,
                 "Flow   : " .. tostring(Pabrik.LastTransition or "-"),
             }, "\n")
