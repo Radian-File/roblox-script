@@ -6,7 +6,7 @@ for _, key in ipairs({ "__KzoyzOpus", "__GTFarm" }) do -- __GTFarm = nama versi 
 end
 local Session = {}
 G.__KzoyzOpus = Session
-print("[Rocky] Build 2026-11-09-state-probe-2")
+print("[Rocky] Build 2026-11-09-real-registry-1")
 local function alive()
     return G.__KzoyzOpus == Session
 end
@@ -63,20 +63,71 @@ Session.Cleanup = function()
     pcall(Session.RemoveStaleGui)
 end
 
-local Shared = ReplicatedStorage:WaitForChild("Shared")
+-- Build lama memakai Folder ReplicatedStorage.Shared. Build sekarang memindahkan
+-- module ke registry nil-parented yang ditunjuk atribut Qz. Ambil registry dari
+-- environment game (bukan `shared` milik executor), tetapi pertahankan fallback lama.
+Session.Shared = ReplicatedStorage:FindFirstChild("Shared")
+if Session.Shared then
+    Session.ModuleMode = "ReplicatedStorage.Shared"
+else
+    local okEnv, gameEnv = pcall(function() return getrenv and getrenv() end)
+    local moduleKey = ReplicatedStorage:GetAttribute("Qz")
+    local gameShared = okEnv and type(gameEnv) == "table" and gameEnv.shared or nil
+    Session.Shared = moduleKey and type(gameShared) == "table" and gameShared[moduleKey] or nil
+    if type(Session.Shared) == "table" then Session.ModuleMode = "Qz registry" end
+end
+if not Session.Shared then
+    warn("[Rocky] Boot gagal: registry module game tidak tersedia")
+    pcall(Session.Cleanup)
+    G.__KzoyzOpus = nil
+    return
+end
+print("[Rocky] Boot registry module: " .. tostring(Session.ModuleMode))
+
+function Session.moduleRef(legacyParent, legacyName, alias, ui)
+    local okLegacy, legacy = pcall(function()
+        return legacyParent and legacyParent:FindFirstChild(legacyName)
+    end)
+    if okLegacy and legacy then return legacy end
+    local registry = ui and Session.Shared.Ui or Session.Shared
+    if type(registry) ~= "table" then return nil end
+    local okAlias, ref = pcall(function() return registry[alias] end)
+    return okAlias and ref or nil
+end
+
+function Session.requireModule(label, legacyParent, legacyName, alias, ui)
+    local ref = Session.moduleRef(legacyParent, legacyName, alias, ui)
+    if not ref then
+        warn("[Rocky] Module " .. label .. " tidak ditemukan")
+        return nil
+    end
+    local ok, module = pcall(require, ref)
+    if not ok then
+        warn("[Rocky] Module " .. label .. " gagal dimuat: " .. tostring(module))
+        return nil
+    end
+    return module
+end
+
 local WorldRemotes = ReplicatedStorage:WaitForChild("WorldRemotes")
 -- Remote lama (versi game sebelum ByteNet). Hanya dipakai kalau fungsi baru tidak ada.
-local SetTileRemote = WorldRemotes:FindFirstChild("SetTile")
+Session.SetTileRemote = WorldRemotes:FindFirstChild("SetTile")
 
-local ItemDB = require(Shared.ItemDB)
-local InventoryModule = require(Shared.Inventory)
-local NetOk, Net = pcall(require, Shared.Net)
+local ItemDB = Session.requireModule("ItemDB", Session.Shared, "ItemDB", "RnyflzPbj74")
+local InventoryModule = Session.requireModule("Inventory", Session.Shared, "Inventory", "hAYmgnN0A36")
+local Net = Session.requireModule("Net", Session.Shared, "Net", "j1PKXTgzz")
+if type(ItemDB) ~= "table" or type(InventoryModule) ~= "table" then
+    warn("[Rocky] Boot gagal: module inti game tidak lengkap")
+    pcall(Session.Cleanup)
+    G.__KzoyzOpus = nil
+    return
+end
 
-local GameGui = PlayerGui:WaitForChild("GameGui")
-local ParticlesOk, ParticlesModule = pcall(require, GameGui:WaitForChild("Particles"))
-local MenuModOk, MenuModule = pcall(require, GameGui:WaitForChild("WorldMenu"))
-local RolesOk, RolesModule = pcall(require, Shared:FindFirstChild("Roles"))
-local SfxOk, SfxModule = pcall(require, Shared:FindFirstChild("Sfx"))
+Session.GameGui = PlayerGui:WaitForChild("GameGui")
+Session.ParticlesModule = Session.requireModule("Particles", Session.GameGui, "Particles", "owK7obDge", true)
+local MenuModule = Session.requireModule("WorldMenu", Session.GameGui, "WorldMenu", "xGd5Vdk03obV", true)
+Session.RolesModule = Session.requireModule("Roles", Session.Shared, "Roles", "si2Za6GXUIg")
+Session.SfxModule = Session.requireModule("Sfx", Session.Shared, "Sfx", "uxTN9eJZMBY")
 
 -- WindUI adalah dependensi remote. Jangan compile respons error HTML sebagai Luau.
 -- Versi dipin agar API GUI tidak berubah diam-diam ketika release terbaru berganti.
@@ -1717,9 +1768,9 @@ local function acceptRefTable(v, source, coreOnly)
     if not Refs.Others and isOthersRef(v) then
         setRef("Others", v, source)
     end
-    if ParticlesOk then
+    if type(Session.ParticlesModule) == "table" then
         local ok, valid = pcall(function()
-            return getmetatable(v) == ParticlesModule and type(rawget(v, "live")) == "table"
+            return getmetatable(v) == Session.ParticlesModule and type(rawget(v, "live")) == "table"
                 and type(rawget(v, "free")) == "table"
         end)
         if ok and valid and not table.find(Refs.Particles, v) then table.insert(Refs.Particles, v) end
@@ -1766,16 +1817,16 @@ local function findRefs(gcObjects, wants)
     if Refs.Inv then Refs.Source.Inv = "preserved" end
     if Refs.World then Refs.Source.World = previous.Source.World or "quick scan preserved" end
     if Refs.State then Refs.Source.State = previous.Source.State or "quick scan preserved" end
-    if MenuModOk and type(MenuModule) == "table" then
+    if type(MenuModule) == "table" then
         local hasMenuApi = type(rawget(MenuModule, "openPicker")) == "function"
             or type(rawget(MenuModule, "enter")) == "function"
             or type(rawget(MenuModule, "openBackpack")) == "function"
         if hasMenuApi then setRef("Menu", MenuModule, "GameGui.WorldMenu") end
     end
     Anim.Particles = nil
-    local setFallback = (NetOk and type(Net) == "table" and type(Net.tile) == "table"
-        and type(Net.tile.send) == "function") or SetTileRemote ~= nil
-    local punchFallback = setFallback and NetOk and type(Net) == "table" and type(Net.act) == "table"
+    local setFallback = (type(Net) == "table" and type(Net.tile) == "table"
+        and type(Net.tile.send) == "function") or Session.SetTileRemote ~= nil
+    local punchFallback = setFallback and type(Net) == "table" and type(Net.act) == "table"
         and type(Net.act.send) == "function"
     local probe = Refs.StateProbe
     local previousIndexProbe = probe.AllowIndexFunction
@@ -1835,19 +1886,19 @@ local function findRefs(gcObjects, wants)
 end
 
 local function setTileFallbackSource()
-    if NetOk and type(Net) == "table" and type(Net.tile) == "table"
+    if type(Net) == "table" and type(Net.tile) == "table"
         and type(Net.tile.send) == "function" then
-        return "Shared.Net.tile"
+        return "Net.tile"
     end
-    if SetTileRemote then return "WorldRemotes.SetTile" end
+    if Session.SetTileRemote then return "WorldRemotes.SetTile" end
     return nil
 end
 
 local function punchFallbackSource()
     local setSource = setTileFallbackSource()
-    if setSource and NetOk and type(Net) == "table" and type(Net.act) == "table"
+    if setSource and type(Net) == "table" and type(Net.act) == "table"
         and type(Net.act.send) == "function" then
-        return "Shared.Net.act + " .. setSource
+        return "Net.act + " .. setSource
     end
     return nil
 end
@@ -2251,15 +2302,15 @@ local function sendSetTile(layer, x, y, id, requireWorldConfirmation)
         if ok then return true end
         warn("[Rocky] setTile game gagal, pakai remote langsung: " .. tostring(err))
     end
-    if NetOk and type(Net) == "table" and type(Net.tile) == "table" then
+    if type(Net) == "table" and type(Net.tile) == "table" then
         -- sama seperti game: layer 1 = fg, 2 = bg
         local ok = pcall(Net.tile.send, {
             layer = (layer == "bg") and 2 or 1, x = x, y = y, id = id, flip = false,
         })
         if not ok then return false end
-    elseif SetTileRemote then
+    elseif Session.SetTileRemote then
         local ok = pcall(function()
-            SetTileRemote:FireServer(layer, x, y, id, false)
+            Session.SetTileRemote:FireServer(layer, x, y, id, false)
         end)
         if not ok then return false end
     else
@@ -2276,8 +2327,8 @@ local function sendSetTile(layer, x, y, id, requireWorldConfirmation)
 end
 
 local function sendHitFx(x, y)
-    if NetOk and type(Net) == "table" and Net.act then
-        pcall(Net.act.send, { x = x + 0.5, y = y + 0.5 })
+    if type(Net) == "table" and Net.act then
+        pcall(Net.act.send, { kind = 6, x = x + 0.5, y = y + 0.5 })
     end
 end
 
@@ -2556,7 +2607,7 @@ end
 -- tersembunyi sebagai upvalue WorldMenu atau class __index-function.
 function Anim.probeWorldMenuState()
     if Refs.State and not Refs.StatePending then return true end
-    if not (MenuModOk and type(MenuModule) == "table") then return false end
+    if type(MenuModule) ~= "table" then return false end
     local probe = Refs.StateProbe
     probe.knownPasses = (probe.knownPasses or 0) + 1
     local previousIndexProbe = probe.AllowIndexFunction
@@ -3047,10 +3098,12 @@ local function setLite(on)
     State.LiteMode = on
     if on then
         if #LiteSaved == 0 then
-            if ParticlesOk then liteOverride(ParticlesModule, "spawn", function() return DummyParticle end) end
-            if SfxOk then
-                liteOverride(SfxModule, "play", function() return NullSound end)
-                liteOverride(SfxModule, "playAt", function() return NullSound end)
+            if type(Session.ParticlesModule) == "table" then
+                liteOverride(Session.ParticlesModule, "spawn", function() return DummyParticle end)
+            end
+            if type(Session.SfxModule) == "table" then
+                liteOverride(Session.SfxModule, "play", function() return NullSound end)
+                liteOverride(Session.SfxModule, "playAt", function() return NullSound end)
             end
         end
         for _, p in ipairs(Refs.Particles) do
@@ -3134,7 +3187,7 @@ local function isDownWrapper(saved, key, ...)
     return OrigIsDown(saved, key, ...)
 end
 
-if MenuModOk and type(MenuModule) == "table" and type(rawget(MenuModule, "isDown")) == "function" then
+if type(MenuModule) == "table" and type(rawget(MenuModule, "isDown")) == "function" then
     OrigIsDown = rawget(MenuModule, "isDown")
     MenuModule.isDown = isDownWrapper
 end
@@ -3201,7 +3254,7 @@ end
 local function raymanAct(dir)
     local ok, s = pcall(Refs.State)
     if not ok or type(s) ~= "table" or not s.x then return end
-    if NetOk and type(Net) == "table" and Net.act then
+    if type(Net) == "table" and Net.act then
         pcall(Net.act.send, { kind = 4, x = s.x + dir[1], y = s.y - 0.475 + dir[2] })
     end
 end
@@ -9994,10 +10047,10 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
     local function strip(s) return (tostring(s or ""):gsub("`.", "")) end
 
     local function roleOf(uid)
-        if not (RolesOk and type(RolesModule) == "table") then return nil end
-        local okD, dev = pcall(RolesModule.isDeveloper, uid)
+        if type(Session.RolesModule) ~= "table" then return nil end
+        local okD, dev = pcall(Session.RolesModule.isDeveloper, uid)
         if okD and dev then return "Developer" end
-        local okM, mod = pcall(RolesModule.isModerator, uid)
+        local okM, mod = pcall(Session.RolesModule.isModerator, uid)
         if okM and mod then return "Moderator" end
         return nil
     end
@@ -10037,8 +10090,8 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
 
     local function label(p)
         local under = false
-        if p.role and type(RolesModule.isUndercover) == "function" then
-            local ok, u = pcall(RolesModule.isUndercover, p.id)
+        if p.role and type(Session.RolesModule.isUndercover) == "function" then
+            local ok, u = pcall(Session.RolesModule.isUndercover, p.id)
             under = ok and u == true
         end
         return p.name .. " (" .. (p.role or "Pemain") .. (under and ", undercover" or "") .. ")"
@@ -10551,7 +10604,7 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
     local function strip(s) return (tostring(s or ""):gsub("`.", "")) end
 
     local function netCall(...)
-        if NetOk and type(Net) == "table" and type(Net.call) == "function" then
+        if type(Net) == "table" and type(Net.call) == "function" then
             return pcall(Net.call, ...)
         end
         return false, "Net.call tidak ada"
@@ -11424,7 +11477,8 @@ end)() end
 --   3. Server membalas id pohon hasil splice, tile langsung diganti di layar.
 --   Hasil splice diperkirakan dulu pakai modul Splice game; kalau tidak bisa, tidak dijalankan.
 do (function()
-    local okMod, SpliceMod = pcall(require, Shared:FindFirstChild("Splice"))
+    local SpliceMod = Session.requireModule("Splice", Session.Shared, "Splice", "iwo7L9om71S")
+    local okMod = type(SpliceMod) == "table"
 
     function Splice.result(a, b)
         if not (okMod and type(SpliceMod) == "table" and type(SpliceMod.result) == "function") then return nil end
@@ -12472,7 +12526,7 @@ do (function()
     -- Net.on hanya MENDENGAR (tidak kirim apa pun ke server). Listener tidak bisa dilepas,
     -- jadi dicek alive() supaya script lama yang sudah ditutup tidak ikut jalan.
     local closedHooked = false
-    if NetOk and type(Net) == "table" and type(Net.on) == "function"
+    if type(Net) == "table" and type(Net.on) == "function"
         and type(Net.EVENTS) == "table" and Net.EVENTS.WorldClosed then
         closedHooked = pcall(Net.on, "WorldClosed", function(msg)
             if alive() then onWorldClosed(msg) end
@@ -12868,7 +12922,7 @@ local function reconnect(show, full)
     end
     -- 2) Startup/respawn berhenti di jalur ringan. getgc hanya boleh berjalan
     -- setelah pengguna menekan tombol Hubungkan ke game (full == true).
-    if MenuModOk and type(MenuModule) == "table" then
+    if type(MenuModule) == "table" then
         Refs.Menu = MenuModule
         Refs.Source.Menu = "GameGui.WorldMenu"
     end
@@ -13255,7 +13309,7 @@ Session.Cleanup = function()
     -- kembalikan fungsi game ke asal
     pcall(setLite, false)
     pcall(unhookJammer)
-    if OrigIsDown and MenuModOk and rawget(MenuModule, "isDown") == isDownWrapper then
+    if OrigIsDown and type(MenuModule) == "table" and rawget(MenuModule, "isDown") == isDownWrapper then
         MenuModule.isDown = OrigIsDown
     end
     if Refs.World then
