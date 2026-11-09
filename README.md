@@ -71,7 +71,7 @@ flowchart TD
 - `Refs.Inv` dipakai oleh fungsi seperti `invCount()` dan pemeriksaan ruang inventory.
 - `Refs.Trees` serta `Auto.treeEntry()` mendukung penentuan kesiapan pohon melalui `treeReadyAt()`.
 - `Drops.list` merepresentasikan drop yang teramati di world, dengan logika pengambilan dan retry.
-- `Shared.Net`, `WorldRemotes.SetTile`, dan fungsi game yang berhasil ditemukan dipakai sebagai jalur komunikasi; mekanisme fallback dan penerimaan oleh server **perlu diuji**.
+- Registry module `Qz` (dengan fallback hierarchy lama), wrapper `Net`, `WorldRemotes.SetTile`, dan fungsi game yang berhasil ditemukan dipakai sebagai jalur komunikasi; mekanisme fallback dan penerimaan oleh server **perlu diuji**.
 
 ### Auto Farm
 
@@ -90,7 +90,7 @@ Mode: `Place + Break`, `Break saja`, `Place saja`. Jeda default yang tampak pada
 - Algoritma `astar()` (sekitar baris **2928**) menghasilkan jalur sesuai representasi tile dan perkiraan fisika game.
 - `followPath()` (sekitar **3453**) melaksanakan langkah berjalan, melompat, jatuh, melewati gap, dan kasus pijakan/tangga.
 - `travelGroup()` (sekitar **3521**) menavigasi ke kelompok target; ada pencatatan jalur/target gagal dan skip sementara.
-- `AutoInput` dan pembungkus kontrol `WorldMenu.isDown` dipakai untuk mengarahkan karakter menggunakan sistem input game, bukan sekadar teleport posisi.
+- `AutoInput` dan pembungkus `isDown` pada module input game dipakai untuk mengarahkan karakter menggunakan sistem input game, bukan sekadar teleport posisi.
 - Pathfinding berbagi state dan kontrol dengan beberapa fitur. Perubahan navigasi harus memperhatikan konflik antar-automa.
 
 ### Farmer dan pertumbuhan pohon

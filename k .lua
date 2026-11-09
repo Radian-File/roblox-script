@@ -6,7 +6,7 @@ for _, key in ipairs({ "__KzoyzOpus", "__GTFarm" }) do -- __GTFarm = nama versi 
 end
 local Session = {}
 G.__KzoyzOpus = Session
-print("[Rocky] Build 2026-11-09-real-registry-1")
+print("[Rocky] Build 2026-11-09-state-renderer-4")
 local function alive()
     return G.__KzoyzOpus == Session
 end
@@ -52,6 +52,20 @@ Session.RemoveStaleGui = function()
         if okHui and hui and hui ~= core then roots[#roots + 1] = hui end
     end
     for _, root in ipairs(roots) do
+        local staleWind = {}
+        for _, obj in ipairs(root:GetDescendants()) do
+            if obj.Name == "WindUI" then staleWind[#staleWind + 1] = obj end
+        end
+        for _, wind in ipairs(staleWind) do
+            local owned = false
+            for _, obj in ipairs(wind:GetDescendants()) do
+                if obj:IsA("TextLabel") and obj.Text == "Rocky" then
+                    owned = true
+                    break
+                end
+            end
+            if owned then pcall(function() wind:Destroy() end) end
+        end
         for _, name in ipairs({ "KzoyzGrid", "KzoyzFlyPad", "RockyGrid", "RockyFlyPad" }) do
             local obj = root:FindFirstChild(name)
             if obj then pcall(function() obj:Destroy() end) end
@@ -125,9 +139,15 @@ end
 
 Session.GameGui = PlayerGui:WaitForChild("GameGui")
 Session.ParticlesModule = Session.requireModule("Particles", Session.GameGui, "Particles", "owK7obDge", true)
-local MenuModule = Session.requireModule("WorldMenu", Session.GameGui, "WorldMenu", "xGd5Vdk03obV", true)
+local InputModule = Session.requireModule("Input", Session.GameGui, "WorldMenu", "xGd5Vdk03obV", true)
 Session.RolesModule = Session.requireModule("Roles", Session.Shared, "Roles", "si2Za6GXUIg")
 Session.SfxModule = Session.requireModule("Sfx", Session.Shared, "Sfx", "uxTN9eJZMBY")
+
+function Session.netSender(name)
+    if type(Net) ~= "table" then return nil end
+    local channel = Net[name]
+    return type(channel) == "table" and type(channel.send) == "function" and channel.send or nil
+end
 
 -- WindUI adalah dependensi remote. Jangan compile respons error HTML sebagai Luau.
 -- Versi dipin agar API GUI tidak berubah diam-diam ketika release terbaru berganti.
@@ -214,7 +234,6 @@ local State = {
     CollectMode = "Sentuhan",     -- "Sentuhan" (badan, seperti main manual) / "Remote" (ambil dari jauh, cara lama)
     Override = nil,               -- Pabrik memakai tile & block sendiri
     Quiet = false,                -- tanpa notifikasi (dipakai Pabrik)
-    Cycles = 0,
     Placed = 0,
     Broken = 0,
     Collected = 0,                -- jumlah drop yang diambil
@@ -441,8 +460,7 @@ local Refs = {
     StateProbe = {
         holders = 0, direct = 0, metatable = 0, lastWhy = nil,
         indexFns = 0, indexErrors = 0, lastIndexWhy = nil,
-        knownPasses = 0, knownFunctions = 0, knownTables = 0, knownWhy = nil,
-        valueTables = 0, valueHits = 0,
+        playersPasses = 0, playersFunctions = 0, playersTables = 0, playersWhy = nil,
         AllowIndexFunction = false,
     },
 }
@@ -1451,6 +1469,7 @@ end)() end
 -- CARI DATA & FUNGSI GAME (getgc)
 ---------------------------------------------------------------------
 local getconsts = (debug and debug.getconstants) or getconstants
+local getUpvalues -- diisi setelah helper discovery didefinisikan
 
 -- Fungsi place game: satu-satunya yang memakai "placedAt" + "flips" sekaligus.
 -- Kirimnya "tile" (game baru, ByteNet) atau "SetTile" (game lama).
@@ -1532,24 +1551,6 @@ function Anim.validateStateValue(s, activeOnly)
     return s
 end
 
--- State versi baru kadang disimpan langsung sebagai table upvalue, bukan sebagai
--- object yang mengekspos method state(). Nilai seperti drop juga punya x/y, jadi
--- direct value hanya diterima dari graph WorldMenu dan wajib membawa minimal dua
--- capability gerak/kehidupan tambahan.
-function Anim.isDirectStateValue(s)
-    if type(s) ~= "table" or type(rawget(s, "x")) ~= "number" or type(rawget(s, "y")) ~= "number" then
-        return false
-    end
-    local evidence = 0
-    if type(rawget(s, "active")) == "boolean" then evidence += 1 end
-    if type(rawget(s, "dead")) == "boolean" then evidence += 1 end
-    if type(rawget(s, "grounded")) == "boolean" then evidence += 1 end
-    if type(rawget(s, "facing")) == "number" then evidence += 1 end
-    if type(rawget(s, "vx")) == "number" then evidence += 1 end
-    if type(rawget(s, "vy")) == "number" then evidence += 1 end
-    return evidence >= 2
-end
-
 local function readStateRef(fn, activeOnly)
     if type(fn) ~= "function" then return nil, "state bukan function" end
     local ok, s = pcall(fn)
@@ -1620,19 +1621,7 @@ function Anim.bindStateMethod(fn, owner)
     return nil, tostring(value) .. "; dengan self: " .. tostring(withSelf)
 end
 
-function Anim.stateFunctionFrom(v, allowDirectValue)
-    if allowDirectValue and type(v) == "table"
-        and type(rawget(v, "x")) == "number" and type(rawget(v, "y")) == "number" then
-        local probe = Refs.StateProbe
-        probe.valueTables = (probe.valueTables or 0) + 1
-        if Anim.isDirectStateValue(v) then
-            local state = Anim.validateStateValue(v, false)
-            if state then
-                probe.valueHits = (probe.valueHits or 0) + 1
-                return function() return v end, "direct value", rawget(v, "active") ~= false
-            end
-        end
-    end
+function Anim.stateFunctionFrom(v)
     local fn, kind = Anim.findStateMethod(v)
     if type(fn) ~= "function" then return nil end
     local probe = Refs.StateProbe
@@ -1648,6 +1637,40 @@ function Anim.stateFunctionFrom(v, allowDirectValue)
         return nil
     end
     return bound, kind, active
+end
+
+-- Versi game saat ini membuat callback State di main world module, lalu
+-- memberikannya kepada player renderer. Object renderer dapat dikenali lewat
+-- API list/where/playerAt; closure update-nya menangkap sendState, dan sendState
+-- menangkap table opsi yang memiliki callback state(). Jalur terarah ini jauh
+-- lebih kecil daripada menyisir graph module input yang tidak memiliki State.
+function Anim.stateFromPlayersRef(v)
+    local probe = Refs.StateProbe
+    probe.playersPasses = (probe.playersPasses or 0) + 1
+    if type(getUpvalues) ~= "function" then
+        probe.playersWhy = "getupvalues belum tersedia"
+        return nil
+    end
+    local okUpdate, update = pcall(function() return v.update end)
+    if not okUpdate or type(update) ~= "function" then
+        probe.playersWhy = "player renderer tidak memiliki update()"
+        return nil
+    end
+    probe.playersFunctions = (probe.playersFunctions or 0) + 1
+    for _, outer in pairs(getUpvalues(update)) do
+        if type(outer) == "function" then
+            probe.playersFunctions = (probe.playersFunctions or 0) + 1
+            for _, value in pairs(getUpvalues(outer)) do
+                if type(value) == "table" then
+                    probe.playersTables = (probe.playersTables or 0) + 1
+                    local stateFn, stateKind, stateActive = Anim.stateFunctionFrom(value)
+                    if stateFn then return stateFn, stateKind, stateActive end
+                end
+            end
+        end
+    end
+    probe.playersWhy = "callback state() tidak ditemukan pada update renderer"
+    return nil
 end
 
 -- Fingerprint world aktif yang dipakai versi awal: grid, ukuran, dan spawn.
@@ -1690,13 +1713,9 @@ local function isGameFn(fn)
         local ok, res = pcall(isexecutorclosure, fn)
         if ok and res then return false end
     end
-    local info = debug and debug.info
-    if type(info) == "function" then
-        local ok, src = pcall(info, fn, "s")
-        if ok and type(src) == "string" and src ~= "" and not string.find(src, "GameGui", 1, true) then
-            return false
-        end
-    end
+    -- Module game versi Qz nil-parented tidak lagi memiliki source path GameGui.
+    -- Filter path lama justru membuang closure game yang valid; executor closure
+    -- tetap ditolak oleh isexecutorclosure dan fingerprint aksi di validatornya.
     return true
 end
 
@@ -1746,10 +1765,17 @@ local function acceptRefTable(v, source, coreOnly)
         if ok and valid then setRef("Inv", v, source) end
     end
     if not Refs.State or Refs.StatePending then
-        local allowDirectValue = source == "GameGui.WorldMenu" or source == "GameGui.WorldMenu upvalue"
-        local stateFn, stateKind, stateActive = Anim.stateFunctionFrom(v, allowDirectValue)
+        local stateFn, stateKind, stateActive = Anim.stateFunctionFrom(v)
         if stateFn and (not Refs.State or stateActive) then
             setRef("State", stateFn, source .. " " .. tostring(stateKind))
+            Refs.StatePending = not stateActive
+        end
+    end
+    local playersRef = (not Refs.State or Refs.StatePending or not coreOnly) and isOthersRef(v)
+    if playersRef and (not Refs.State or Refs.StatePending) then
+        local stateFn, stateKind, stateActive = Anim.stateFromPlayersRef(v)
+        if stateFn and (not Refs.State or stateActive) then
+            setRef("State", stateFn, source .. " player renderer " .. tostring(stateKind))
             Refs.StatePending = not stateActive
         end
     end
@@ -1765,7 +1791,7 @@ local function acceptRefTable(v, source, coreOnly)
         and type(rawget(v, "handPower")) == "function" then
         setRef("Hud", v, source)
     end
-    if not Refs.Others and isOthersRef(v) then
+    if not Refs.Others and playersRef then
         setRef("Others", v, source)
     end
     if type(Session.ParticlesModule) == "table" then
@@ -1817,17 +1843,9 @@ local function findRefs(gcObjects, wants)
     if Refs.Inv then Refs.Source.Inv = "preserved" end
     if Refs.World then Refs.Source.World = previous.Source.World or "quick scan preserved" end
     if Refs.State then Refs.Source.State = previous.Source.State or "quick scan preserved" end
-    if type(MenuModule) == "table" then
-        local hasMenuApi = type(rawget(MenuModule, "openPicker")) == "function"
-            or type(rawget(MenuModule, "enter")) == "function"
-            or type(rawget(MenuModule, "openBackpack")) == "function"
-        if hasMenuApi then setRef("Menu", MenuModule, "GameGui.WorldMenu") end
-    end
     Anim.Particles = nil
-    local setFallback = (type(Net) == "table" and type(Net.tile) == "table"
-        and type(Net.tile.send) == "function") or Session.SetTileRemote ~= nil
-    local punchFallback = setFallback and type(Net) == "table" and type(Net.act) == "table"
-        and type(Net.act.send) == "function"
+    local setFallback = Session.netSender("tile") ~= nil or Session.SetTileRemote ~= nil
+    local punchFallback = setFallback and Session.netSender("act") ~= nil
     local probe = Refs.StateProbe
     local previousIndexProbe = probe.AllowIndexFunction
     probe.AllowIndexFunction = true
@@ -1886,18 +1904,14 @@ local function findRefs(gcObjects, wants)
 end
 
 local function setTileFallbackSource()
-    if type(Net) == "table" and type(Net.tile) == "table"
-        and type(Net.tile.send) == "function" then
-        return "Net.tile"
-    end
+    if Session.netSender("tile") then return "Net.tile" end
     if Session.SetTileRemote then return "WorldRemotes.SetTile" end
     return nil
 end
 
 local function punchFallbackSource()
     local setSource = setTileFallbackSource()
-    if setSource and type(Net) == "table" and type(Net.act) == "table"
-        and type(Net.act.send) == "function" then
+    if setSource and Session.netSender("act") then
         return "Net.act + " .. setSource
     end
     return nil
@@ -1994,10 +2008,10 @@ local function logRefDiagnostics()
     end
     if not Refs.State then
         local probe = Refs.StateProbe
-        print(("[Rocky] Probe State WorldMenu: pass %d | fungsi %d | table upvalue %d | kandidat x/y %d | direct state %d | __index function %d | error index %d")
-            :format(probe.knownPasses or 0, probe.knownFunctions or 0, probe.knownTables or 0,
-                probe.valueTables or 0, probe.valueHits or 0, probe.indexFns or 0, probe.indexErrors or 0))
-        if probe.knownWhy then warn("[Rocky] Probe State WorldMenu gagal: " .. tostring(probe.knownWhy)) end
+        print(("[Rocky] Probe State player renderer: pass %d | fungsi %d | table upvalue %d | __index function %d | error index %d")
+            :format(probe.playersPasses or 0, probe.playersFunctions or 0, probe.playersTables or 0,
+                probe.indexFns or 0, probe.indexErrors or 0))
+        if probe.playersWhy then warn("[Rocky] Probe State player renderer: " .. tostring(probe.playersWhy)) end
     end
 end
 
@@ -2141,7 +2155,6 @@ function UI.ddRefresh(dd, labels)
         UI.DropOk = os.clock()
     else
         UI.DropErr = ("%s (id %s/%s)"):format(tostring(err), tostring(UI.ident()), tostring(Session.Ident))
-        UI.DropErrAt = os.clock()
     end
 end
 
@@ -2302,9 +2315,10 @@ local function sendSetTile(layer, x, y, id, requireWorldConfirmation)
         if ok then return true end
         warn("[Rocky] setTile game gagal, pakai remote langsung: " .. tostring(err))
     end
-    if type(Net) == "table" and type(Net.tile) == "table" then
+    local tileSend = Session.netSender("tile")
+    if tileSend then
         -- sama seperti game: layer 1 = fg, 2 = bg
-        local ok = pcall(Net.tile.send, {
+        local ok = pcall(tileSend, {
             layer = (layer == "bg") and 2 or 1, x = x, y = y, id = id, flip = false,
         })
         if not ok then return false end
@@ -2327,9 +2341,8 @@ local function sendSetTile(layer, x, y, id, requireWorldConfirmation)
 end
 
 local function sendHitFx(x, y)
-    if type(Net) == "table" and Net.act then
-        pcall(Net.act.send, { kind = 6, x = x + 0.5, y = y + 0.5 })
-    end
+    local actSend = Session.netSender("act")
+    if actSend then pcall(actSend, { kind = 6, x = x + 0.5, y = y + 0.5 }) end
 end
 
 local function hitsNeeded(id)
@@ -2507,8 +2520,6 @@ end
 -- Game cuma ambil drop yang disentuh badan; di sini drop diambil langsung.
 local TakeDropRemote = WorldRemotes:FindFirstChild("TakeDrop") -- game lama saja
 
-local getUpvalues -- (didefinisikan di bawah)
-
 -- Fungsi tangan game dipanggil dari fungsi gambar yang terhubung ke RenderStepped:
 -- cukup periksa upvalue fungsi-fungsi itu (jauh lebih ringan dari scan getgc).
 function Anim.findFast()
@@ -2601,59 +2612,16 @@ function getUpvalues(fn)
     return out
 end
 
--- Probe State yang dibatasi ke module input resmi yang sudah di-require.
--- Ini bukan getgc tambahan dan tidak memanggil remote/aksi game. Tujuannya
--- membedakan State yang benar-benar tidak diekspos dari State yang hanya
--- tersembunyi sebagai upvalue WorldMenu atau class __index-function.
-function Anim.probeWorldMenuState()
+-- Retry murah untuk State yang sudah memiliki player renderer terverifikasi.
+-- Tidak mengambil snapshot getgc dan tidak memanggil remote/aksi game.
+function Anim.probePlayersState()
     if Refs.State and not Refs.StatePending then return true end
-    if type(MenuModule) ~= "table" then return false end
-    local probe = Refs.StateProbe
-    probe.knownPasses = (probe.knownPasses or 0) + 1
-    local previousIndexProbe = probe.AllowIndexFunction
-    probe.AllowIndexFunction = true
-    local ok, err = pcall(function()
-        acceptRefTable(MenuModule, "GameGui.WorldMenu", true)
-        if Refs.State and not Refs.StatePending then return end
-
-        local queue, seen, inspected = {}, {}, 0
-        local function addFunction(fn)
-            if type(fn) == "function" and not seen[fn] then queue[#queue + 1] = fn end
-        end
-        for _, value in pairs(MenuModule) do addFunction(value) end
-        local okMt, mt = pcall(getmetatable, MenuModule)
-        if (not okMt or type(mt) ~= "table") and type(getrawmetatable) == "function" then
-            okMt, mt = pcall(getrawmetatable, MenuModule)
-        end
-        if okMt and type(mt) == "table" then
-            for _, value in pairs(mt) do addFunction(value) end
-            local index = rawget(mt, "__index")
-            if type(index) == "table" then
-                for _, value in pairs(index) do addFunction(value) end
-            end
-        end
-
-        local at = 1
-        while at <= #queue and inspected < 96 and not (Refs.State and not Refs.StatePending) do
-            local fn = queue[at]
-            at += 1
-            if not seen[fn] then
-                seen[fn] = true
-                inspected += 1
-                probe.knownFunctions = (probe.knownFunctions or 0) + 1
-                for _, value in pairs(getUpvalues(fn)) do
-                    if type(value) == "table" then
-                        probe.knownTables = (probe.knownTables or 0) + 1
-                        acceptRefTable(value, "GameGui.WorldMenu upvalue", true)
-                    elseif type(value) == "function" and not seen[value] then
-                        queue[#queue + 1] = value
-                    end
-                end
-            end
-        end
-    end)
-    probe.AllowIndexFunction = previousIndexProbe
-    if not ok then probe.knownWhy = tostring(err) end
+    if not isOthersRef(Refs.Others) then return false end
+    local stateFn, stateKind, stateActive = Anim.stateFromPlayersRef(Refs.Others)
+    if stateFn and (not Refs.State or stateActive) then
+        setRef("State", stateFn, "player renderer " .. tostring(stateKind))
+        Refs.StatePending = not stateActive
+    end
     return Refs.State ~= nil
 end
 
@@ -3187,9 +3155,9 @@ local function isDownWrapper(saved, key, ...)
     return OrigIsDown(saved, key, ...)
 end
 
-if type(MenuModule) == "table" and type(rawget(MenuModule, "isDown")) == "function" then
-    OrigIsDown = rawget(MenuModule, "isDown")
-    MenuModule.isDown = isDownWrapper
+if type(InputModule) == "table" and type(rawget(InputModule, "isDown")) == "function" then
+    OrigIsDown = rawget(InputModule, "isDown")
+    InputModule.isDown = isDownWrapper
 end
 
 -- Pasang walkspeed & fly tiap frame (game bisa menimpanya)
@@ -3391,7 +3359,6 @@ local function farmLoop(runId)
             if not waitMs(State.BreakMs) then break end
         end
 
-        State.Cycles += 1
         if os.clock() - lastStatus > 1 then
             lastStatus = os.clock()
             updateStatus()
@@ -6299,16 +6266,10 @@ end
 ---------------------------------------------------------------------
 -- PABRIK
 ---------------------------------------------------------------------
--- Fase (berputar terus):
---   PANEN : panen semua pohon siap di lahan (berhenti kalau block / seed hampir 200)
---   TANAM : tanam seed di semua tile lahan yang kosong
---   BREAK : jalan ke posisi break, Auto Farm (place + break) di tile pabrik sampai block HABIS
---           (tidak diselingi cek pohon; berhenti hanya kalau seed harus di-drop / penuh / macet)
---   TUNGGU: tunggu pohon siap, lalu kembali ke PANEN
---   Kapan saja seed >= batas drop -> pergi drop (seed - sisakan), lalu pulang.
--- Inventori maksimal 200 per item, jadi semua fase dijaga supaya tidak penuh.
--- Drop yang jatuh di tempat drop tidak di-collect lagi.
-local BOOT_SEEDS = 10 -- (mode produksi) cukup seed segini untuk mulai tanam
+-- Flow utama: VALIDATE -> BREAK -> PLANT -> WAIT_GROWTH -> HARVEST -> BREAK.
+-- STORE_BLOCK dan REFILL_BLOCK menginterupsi fase utama lalu kembali melalui
+-- ResumePhase; kegagalan yang tidak aman masuk PAUSED dengan alasan eksplisit.
+-- Batas inventory Pabrik berasal dari pabrikInventoryPolicy(), bukan asumsi 200.
 local CAP = 190       -- batas aman jumlah item (maksimal 200 per item)
 
 local function pabrikInventoryPolicy()
@@ -7595,7 +7556,6 @@ end
 local function vendLoop(runId)
     local function live() return Vend.Running and alive() and Vend.RunId == runId end
     local home = Guard.worldName()
-    Vend.Home = home
     Vend.Soft = 0
     if #Vend.waitWorld(home, live) == 0 then
         if live() then Vend.stop("Tidak ada vending milikmu di world ini (jalankan di world vending)") end
@@ -7835,7 +7795,6 @@ function Vend.start()
     table.clear(Vend.Picked)
     table.clear(Vend.Fail)
     table.clear(BadEdge)
-    Vend.FailRuns = 0
     Vend.AtPoint = false
     Vend.Running = true
     Vend.RunId = (Vend.RunId or 0) + 1
@@ -10076,7 +10035,6 @@ do (function() -- fungsi sendiri: variabel di dalam tidak ikut batas 200 local
         end
         return out
     end
-    Guard.playersHere = playersHere
 
     local function threatsOf(list)
         local out = {}
@@ -12816,7 +12774,7 @@ Box.ConnLang = box(ConnTab, "Bahasa / Language", false)
 
 local function refreshLightRefs(scanConnections, maxFunctions)
     if scanConnections ~= false then pcall(Anim.quickRefs, false, maxFunctions or 80) end
-    if not Refs.State or Refs.StatePending then pcall(Anim.probeWorldMenuState) end
+    if not Refs.State or Refs.StatePending then pcall(Anim.probePlayersState) end
     Refs.ViewOk = getView() ~= nil
     if Refs.World and not Drops.list then pcall(findDropRefs, false) end
     if Refs.World and not Refs.Trees and Auto.findTreesStruct then
@@ -12849,23 +12807,13 @@ local function startRefRetry()
     end)
 end
 
-local function waitConnectionSurface(maxSec)
+local function waitGameReferences(maxSec)
     local deadline = os.clock() + (tonumber(maxSec) or 8)
-    local partialReadyAt = nil
     while alive() and os.clock() < deadline do
-        local gameGui = PlayerGui:FindFirstChild("GameGui")
-        local worldGui = gameGui and gameGui:FindFirstChild("World")
-        local camera = worldGui and worldGui:FindFirstChild("Camera")
-        local playerView = camera and camera:FindFirstChild("PlayerView", true)
-        if LocalPlayer.Character and playerView then
-            if getView() or (partialReadyAt and os.clock() - partialReadyAt >= 1) then
-                -- Beri module/state game satu frame tambahan setelah surface muncul.
-                task.wait()
-                return true
-            end
-            -- Tiles dapat menyusul PlayerView. Tunggu sebentar, tetapi jangan
-            -- menahan primary state discovery selama seluruh timeout.
-            partialReadyAt = partialReadyAt or os.clock()
+        pcall(Anim.quickRefs, false, 80)
+        if worldReady(Refs.World) and Refs.Inv and readStateRef(Refs.State, false) then
+            task.wait()
+            return true
         end
         task.wait(0.25)
     end
@@ -12878,10 +12826,10 @@ local function reconnect(show, full)
     if Farmer.Running then stopFarmer("Dihentikan: hubungkan ulang ke game") end
     Auto.resetReach()
     if full then
-        if not waitConnectionSurface(8) then
-            warn("[Rocky] Surface karakter belum lengkap; full scan tetap dicoba")
+        if not waitGameReferences(8) then
+            warn("[Rocky] Reference world/state belum siap; full scan tetap dicoba")
         else
-            -- PlayerView dapat muncul satu frame sebelum holder state game aktif.
+            -- Beri module game satu jeda pendek sebelum snapshot manual.
             task.wait(0.35)
         end
     end
@@ -12901,8 +12849,7 @@ local function reconnect(show, full)
     Refs.StateProbe = {
         holders = 0, direct = 0, metatable = 0, lastWhy = nil,
         indexFns = 0, indexErrors = 0, lastIndexWhy = nil,
-        knownPasses = 0, knownFunctions = 0, knownTables = 0, knownWhy = nil,
-        valueTables = 0, valueHits = 0,
+        playersPasses = 0, playersFunctions = 0, playersTables = 0, playersWhy = nil,
         AllowIndexFunction = false,
     }
     Drops.list, Drops.update = nil, nil
@@ -12922,10 +12869,6 @@ local function reconnect(show, full)
     end
     -- 2) Startup/respawn berhenti di jalur ringan. getgc hanya boleh berjalan
     -- setelah pengguna menekan tombol Hubungkan ke game (full == true).
-    if type(MenuModule) == "table" then
-        Refs.Menu = MenuModule
-        Refs.Source.Menu = "GameGui.WorldMenu"
-    end
     pcall(findDropRefs, false)
     if full then
         Refs.FullScan = true
@@ -12964,18 +12907,10 @@ local function reconnect(show, full)
     end
 end
 
-table.insert(Connections, LocalPlayer.CharacterAdded:Connect(function()
-    Refs.State, Refs.ViewOk = nil, false
-    Refs.StatePending = false
-    Refs.FullScan = false
-    Refs.Why.State = "menunggu state karakter setelah respawn"
-    startRefRetry()
-end))
-
 safe(function()
     Box.ConnMain:Button({
         Title = "Hubungkan ke game",
-        Desc = "Full scan manual setelah karakter masuk world",
+        Desc = "Full scan manual setelah PlayerView masuk world",
         Callback = function()
             UI.later("reconnect", function() reconnect("Koneksi", true) end)
         end,
@@ -13240,10 +13175,7 @@ do
 end
 
 task.spawn(function()
-    task.wait(0.75) -- beri WindUI waktu render stabil sebelum menunggu world
-    if not waitConnectionSurface(8) then
-        warn("[Rocky] Karakter/PlayerView belum siap; koneksi ringan tetap dicoba")
-    end
+    task.wait(0.75) -- beri WindUI waktu render stabil
     reconnect("Rocky v5.2", false)
     -- Penjaga dari config dinyalakan setelah data pemain ketemu
     -- (supaya pemain yang sudah ada dicatat dulu)
@@ -13309,8 +13241,8 @@ Session.Cleanup = function()
     -- kembalikan fungsi game ke asal
     pcall(setLite, false)
     pcall(unhookJammer)
-    if OrigIsDown and type(MenuModule) == "table" and rawget(MenuModule, "isDown") == isDownWrapper then
-        MenuModule.isDown = OrigIsDown
+    if OrigIsDown and type(InputModule) == "table" and rawget(InputModule, "isDown") == isDownWrapper then
+        InputModule.isDown = OrigIsDown
     end
     if Refs.World then
         if Misc.Ghost then pcall(function() Refs.World.ghost = false end) end
