@@ -6,7 +6,7 @@ for _, key in ipairs({ "__KzoyzOpus", "__GTFarm" }) do -- __GTFarm = nama versi 
 end
 local Session = {}
 G.__KzoyzOpus = Session
-print("[Rocky] Build 2026-11-08-refs-transaction-1")
+print("[Rocky] Build 2026-11-09-state-probe-2")
 local function alive()
     return G.__KzoyzOpus == Session
 end
@@ -387,7 +387,13 @@ local Refs = {
     ViewOk = false,
     DeepTried = {},
     FullScan = false,
-    StateProbe = { holders = 0, direct = 0, metatable = 0, lastWhy = nil },
+    StateProbe = {
+        holders = 0, direct = 0, metatable = 0, lastWhy = nil,
+        indexFns = 0, indexErrors = 0, lastIndexWhy = nil,
+        knownPasses = 0, knownFunctions = 0, knownTables = 0, knownWhy = nil,
+        valueTables = 0, valueHits = 0,
+        AllowIndexFunction = false,
+    },
 }
 
 -- Daftar drop di world (diambil dari game)
@@ -1475,6 +1481,24 @@ function Anim.validateStateValue(s, activeOnly)
     return s
 end
 
+-- State versi baru kadang disimpan langsung sebagai table upvalue, bukan sebagai
+-- object yang mengekspos method state(). Nilai seperti drop juga punya x/y, jadi
+-- direct value hanya diterima dari graph WorldMenu dan wajib membawa minimal dua
+-- capability gerak/kehidupan tambahan.
+function Anim.isDirectStateValue(s)
+    if type(s) ~= "table" or type(rawget(s, "x")) ~= "number" or type(rawget(s, "y")) ~= "number" then
+        return false
+    end
+    local evidence = 0
+    if type(rawget(s, "active")) == "boolean" then evidence += 1 end
+    if type(rawget(s, "dead")) == "boolean" then evidence += 1 end
+    if type(rawget(s, "grounded")) == "boolean" then evidence += 1 end
+    if type(rawget(s, "facing")) == "number" then evidence += 1 end
+    if type(rawget(s, "vx")) == "number" then evidence += 1 end
+    if type(rawget(s, "vy")) == "number" then evidence += 1 end
+    return evidence >= 2
+end
+
 local function readStateRef(fn, activeOnly)
     if type(fn) ~= "function" then return nil, "state bukan function" end
     local ok, s = pcall(fn)
@@ -1505,6 +1529,20 @@ function Anim.findStateMethod(v)
     local index = rawget(mt, "__index")
     method = type(index) == "table" and rawget(index, "state") or nil
     if type(method) == "function" then return method, "metatable.__index" end
+    -- Beberapa class Luau memakai __index berbentuk function. Jangan probe semua
+    -- table pada startup; flag ini hanya dibuka saat full scan manual atau saat
+    -- menelusuri WorldMenu yang sudah dikenal source ini.
+    local probe = Refs.StateProbe
+    if type(index) == "function" and probe and probe.AllowIndexFunction then
+        probe.indexFns = (probe.indexFns or 0) + 1
+        local okIndex, viaIndex = pcall(index, v, "state")
+        if okIndex then
+            if type(viaIndex) == "function" then return viaIndex, "metatable.__index()" end
+        else
+            probe.indexErrors = (probe.indexErrors or 0) + 1
+            probe.lastIndexWhy = tostring(viaIndex)
+        end
+    end
     return nil
 end
 
@@ -1531,7 +1569,19 @@ function Anim.bindStateMethod(fn, owner)
     return nil, tostring(value) .. "; dengan self: " .. tostring(withSelf)
 end
 
-function Anim.stateFunctionFrom(v)
+function Anim.stateFunctionFrom(v, allowDirectValue)
+    if allowDirectValue and type(v) == "table"
+        and type(rawget(v, "x")) == "number" and type(rawget(v, "y")) == "number" then
+        local probe = Refs.StateProbe
+        probe.valueTables = (probe.valueTables or 0) + 1
+        if Anim.isDirectStateValue(v) then
+            local state = Anim.validateStateValue(v, false)
+            if state then
+                probe.valueHits = (probe.valueHits or 0) + 1
+                return function() return v end, "direct value", rawget(v, "active") ~= false
+            end
+        end
+    end
     local fn, kind = Anim.findStateMethod(v)
     if type(fn) ~= "function" then return nil end
     local probe = Refs.StateProbe
@@ -1645,7 +1695,8 @@ local function acceptRefTable(v, source, coreOnly)
         if ok and valid then setRef("Inv", v, source) end
     end
     if not Refs.State or Refs.StatePending then
-        local stateFn, stateKind, stateActive = Anim.stateFunctionFrom(v)
+        local allowDirectValue = source == "GameGui.WorldMenu" or source == "GameGui.WorldMenu upvalue"
+        local stateFn, stateKind, stateActive = Anim.stateFunctionFrom(v, allowDirectValue)
         if stateFn and (not Refs.State or stateActive) then
             setRef("State", stateFn, source .. " " .. tostring(stateKind))
             Refs.StatePending = not stateActive
@@ -1726,6 +1777,9 @@ local function findRefs(gcObjects, wants)
         and type(Net.tile.send) == "function") or SetTileRemote ~= nil
     local punchFallback = setFallback and NetOk and type(Net) == "table" and type(Net.act) == "table"
         and type(Net.act.send) == "function"
+    local probe = Refs.StateProbe
+    local previousIndexProbe = probe.AllowIndexFunction
+    probe.AllowIndexFunction = true
     for index, v in ipairs(objects) do
         local tv = type(v)
         if tv == "table" then
@@ -1747,6 +1801,7 @@ local function findRefs(gcObjects, wants)
             and (not wants.others or Refs.Others) then break end
         if index % 100 == 0 then task.wait() end
     end
+    probe.AllowIndexFunction = previousIndexProbe
     if not Refs.SetTile and type(previous.SetTile) == "function" and isSetTileFn(previous.SetTile) then
         setRef("SetTile", previous.SetTile, "preserved")
     end
@@ -1765,7 +1820,13 @@ local function findRefs(gcObjects, wants)
             :format(Refs.StateProbe.holders, Refs.StateProbe.direct or 0, Refs.StateProbe.metatable or 0,
                 tostring(Refs.StateProbe.lastWhy or "hasil tidak valid"))
     else
-        Refs.Why.State = "tidak ada method state() direct/metatable pada quick/full scan"
+        local indexInfo = ""
+        if (Refs.StateProbe.indexFns or 0) > 0 then
+            indexInfo = ("; __index function diprobe %d kali, error %d%s")
+                :format(Refs.StateProbe.indexFns, Refs.StateProbe.indexErrors or 0,
+                    Refs.StateProbe.lastIndexWhy and ("; error terakhir: " .. Refs.StateProbe.lastIndexWhy) or "")
+        end
+        Refs.Why.State = "tidak ada method state() direct/metatable pada quick/full scan" .. indexInfo
     end
     Refs.Why.SetTile = Refs.SetTile and nil or (getconsts and "signature tile/placedAt/flips tidak ditemukan" or "getconstants tidak tersedia")
     Refs.Why.Punch = Refs.Punch and nil or (getconsts and "signature newCrack/HarvestProvider tidak ditemukan" or "getconstants tidak tersedia")
@@ -1879,6 +1940,13 @@ local function logRefDiagnostics()
             and not (name == "Others" and not Refs.DeepTried.Others) then
             warn(("[Rocky] Referensi %s belum tersedia: %s"):format(name, tostring(Refs.Why[name] or "alasan tidak diketahui")))
         end
+    end
+    if not Refs.State then
+        local probe = Refs.StateProbe
+        print(("[Rocky] Probe State WorldMenu: pass %d | fungsi %d | table upvalue %d | kandidat x/y %d | direct state %d | __index function %d | error index %d")
+            :format(probe.knownPasses or 0, probe.knownFunctions or 0, probe.knownTables or 0,
+                probe.valueTables or 0, probe.valueHits or 0, probe.indexFns or 0, probe.indexErrors or 0))
+        if probe.knownWhy then warn("[Rocky] Probe State WorldMenu gagal: " .. tostring(probe.knownWhy)) end
     end
 end
 
@@ -2480,6 +2548,62 @@ function getUpvalues(fn)
         end
     end
     return out
+end
+
+-- Probe State yang dibatasi ke module input resmi yang sudah di-require.
+-- Ini bukan getgc tambahan dan tidak memanggil remote/aksi game. Tujuannya
+-- membedakan State yang benar-benar tidak diekspos dari State yang hanya
+-- tersembunyi sebagai upvalue WorldMenu atau class __index-function.
+function Anim.probeWorldMenuState()
+    if Refs.State and not Refs.StatePending then return true end
+    if not (MenuModOk and type(MenuModule) == "table") then return false end
+    local probe = Refs.StateProbe
+    probe.knownPasses = (probe.knownPasses or 0) + 1
+    local previousIndexProbe = probe.AllowIndexFunction
+    probe.AllowIndexFunction = true
+    local ok, err = pcall(function()
+        acceptRefTable(MenuModule, "GameGui.WorldMenu", true)
+        if Refs.State and not Refs.StatePending then return end
+
+        local queue, seen, inspected = {}, {}, 0
+        local function addFunction(fn)
+            if type(fn) == "function" and not seen[fn] then queue[#queue + 1] = fn end
+        end
+        for _, value in pairs(MenuModule) do addFunction(value) end
+        local okMt, mt = pcall(getmetatable, MenuModule)
+        if (not okMt or type(mt) ~= "table") and type(getrawmetatable) == "function" then
+            okMt, mt = pcall(getrawmetatable, MenuModule)
+        end
+        if okMt and type(mt) == "table" then
+            for _, value in pairs(mt) do addFunction(value) end
+            local index = rawget(mt, "__index")
+            if type(index) == "table" then
+                for _, value in pairs(index) do addFunction(value) end
+            end
+        end
+
+        local at = 1
+        while at <= #queue and inspected < 96 and not (Refs.State and not Refs.StatePending) do
+            local fn = queue[at]
+            at += 1
+            if not seen[fn] then
+                seen[fn] = true
+                inspected += 1
+                probe.knownFunctions = (probe.knownFunctions or 0) + 1
+                for _, value in pairs(getUpvalues(fn)) do
+                    if type(value) == "table" then
+                        probe.knownTables = (probe.knownTables or 0) + 1
+                        acceptRefTable(value, "GameGui.WorldMenu upvalue", true)
+                    elseif type(value) == "function" and not seen[value] then
+                        queue[#queue + 1] = value
+                    end
+                end
+            end
+        end
+    end)
+    probe.AllowIndexFunction = previousIndexProbe
+    if not ok then probe.knownWhy = tostring(err) end
+    return Refs.State ~= nil
 end
 
 -- Cek apakah tabel ini daftar drop game
@@ -12638,6 +12762,7 @@ Box.ConnLang = box(ConnTab, "Bahasa / Language", false)
 
 local function refreshLightRefs(scanConnections, maxFunctions)
     if scanConnections ~= false then pcall(Anim.quickRefs, false, maxFunctions or 80) end
+    if not Refs.State or Refs.StatePending then pcall(Anim.probeWorldMenuState) end
     Refs.ViewOk = getView() ~= nil
     if Refs.World and not Drops.list then pcall(findDropRefs, false) end
     if Refs.World and not Refs.Trees and Auto.findTreesStruct then
@@ -12719,7 +12844,13 @@ local function reconnect(show, full)
     Refs.ViewOk, Refs.TreeTried = false, false
     Refs.DeepTried = {}
     Refs.FullScan = false
-    Refs.StateProbe = { holders = 0, direct = 0, metatable = 0, lastWhy = nil }
+    Refs.StateProbe = {
+        holders = 0, direct = 0, metatable = 0, lastWhy = nil,
+        indexFns = 0, indexErrors = 0, lastIndexWhy = nil,
+        knownPasses = 0, knownFunctions = 0, knownTables = 0, knownWhy = nil,
+        valueTables = 0, valueHits = 0,
+        AllowIndexFunction = false,
+    }
     Drops.list, Drops.update = nil, nil
     for _, name in ipairs({ "World", "State", "Others", "Trees", "Drop" }) do
         Refs.Source[name], Refs.Why[name] = nil, nil

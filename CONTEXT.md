@@ -372,3 +372,19 @@ Rencana detail dan urutan pengerjaan berada di `docs/implementation-plans.md`. S
 - Validator `Others` sekarang membaca `list`, `where`, dan `playerAt` melalui akses property terlindungi sehingga method direct, metatable, dan `__index` dapat dikenali tanpa memanggil API pemain saat discovery.
 - Sebelum full scan dijalankan untuk sesi karakter saat ini, posisi yang belum ditemukan ditampilkan sebagai `TUNDA`, bukan kegagalan final `TIDAK`. Setelah `CharacterAdded`, status full-scan direset agar panel tidak mengklaim deep discovery lama berlaku untuk karakter baru.
 - Build runtime untuk patch ini adalah `2026-11-08-refs-transaction-1`. Pemeriksaan statis menunjukkan jumlah deklarasi local tingkat chunk tidak berubah, `git diff --check` lolos, dan tidak ada compiler Luau lokal. Runtime terotorisasi masih harus memverifikasi Posisi/Pemain setelah full scan, reconnect berulang, respawn, dan perpindahan world.
+
+## 26. Probe State terarah melalui WorldMenu (9 November 2026)
+
+- Audit source menyimpulkan bahwa kegagalan `Posisi: TIDAK` setelah full scan tidak dapat diselesaikan hanya dengan melonggarkan validator `x/y`, `facing`, atau `grounded`: log lama menyatakan tidak ada holder `state()` yang ditemukan, sehingga validator belum pernah menerima kandidat.
+- `Anim.findStateMethod()` kini dapat mencoba accessor `state` yang diekspos oleh metatable `__index` berbentuk function, tetapi hanya selama full scan manual atau probe module terarah. Setiap lookup dan pemanggilan dibungkus `pcall`; kandidat tetap ditolak bila tidak memberi tabel `x/y` numerik.
+- `Anim.probeWorldMenuState()` menelusuri maksimal 96 closure yang sudah diekspos oleh module `GameGui.WorldMenu` dan metatable-nya, lalu memeriksa table upvalue satu tingkat melalui kontrak State yang sama. Probe tidak memanggil `getgc()` tambahan, remote, input gerak, place, punch, collect, atau drop.
+- Log `[Rocky] Probe State WorldMenu` melaporkan jumlah pass, closure, table upvalue, `__index` function, dan error lookup. Bila State ditemukan, sumber harus tercatat sebagai `GameGui.WorldMenu` atau `GameGui.WorldMenu upvalue` dan status tetap hanya `OK` bila accessor aktif memberi `x/y`.
+- Build patch ini adalah `2026-11-09-state-probe-1`. Uji runtime terotorisasi berikutnya: pastikan build tersebut tercetak, masuk world, tekan **Koneksi > Hubungkan ke game** sekali, lalu salin seluruh log `[Rocky]` terkait State dan Probe. Hasilnya diperlukan untuk menentukan accessor game sebenarnya bila probe tetap tidak menemukan kandidat.
+- Risiko deployment: branch lokal berada di depan `origin/main`; URL `Rejoin.ScriptUrl` yang menunjuk source lama dapat memuat kembali build tanpa probe ini setelah teleport. Tidak ada klaim runtime dibuat oleh patch statis ini.
+
+## 27. Kandidat State direct-value dari WorldMenu (9 November 2026)
+
+- Hasil runtime build `2026-11-09-state-probe-1` menunjukkan probe WorldMenu telah memeriksa 31 closure dan 66 table upvalue, tetapi belum menemukan accessor `state()`; Pabrik kemudian berhenti pada VALIDATE dengan `state bukan function` karena `Refs.State` masih `nil`.
+- Build `2026-11-09-state-probe-2` menambahkan jalur discovery terarah untuk state yang disimpan langsung sebagai table upvalue. Jalur ini hanya berlaku untuk `GameGui.WorldMenu` dan table upvalue-nya, tidak untuk seluruh hasil `getgc()`.
+- Tabel diterima hanya jika memiliki `x/y` numerik dan sedikitnya dua capability tambahan (`active`, `dead`, `grounded`, `facing`, `vx`, atau `vy`). Bila diterima, `Refs.State` tetap berupa closure sehingga seluruh consumer lama tetap memanggil kontrak yang sama; bila tidak, Pabrik tetap PAUSED dan tidak menjalankan gerak/aksi dengan kandidat ambigu.
+- Log probe sekarang mencetak `kandidat x/y` dan `direct state`. Runtime terotorisasi wajib memastikan `direct state` bertambah dan log berikutnya menyatakan `State aktif dari GameGui.WorldMenu ... direct value` sebelum Pabrik diuji kembali.
